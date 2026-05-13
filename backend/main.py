@@ -249,58 +249,61 @@ import traceback
 
 @app.get("/api/earnings/{ticker}")
 def get_earnings_info(ticker: str):
-    fmp_key = os.environ.get("FMP_API_KEY")
-    if not fmp_key:
-        return {"error": "FMP API key not configured on server"}
-        
     try:
-        # 1. Earnings Date
-        earnings_res = requests.get(f"https://financialmodelingprep.com/api/v3/earning_calendar/{ticker}?apikey={fmp_key}", timeout=5)
-        earnings_data = earnings_res.json() if earnings_res.status_code == 200 else []
+        stock = yf.Ticker(ticker)
         
+        # 1. Earnings Date
         next_date = None
         days_until = -1
         is_warning = False
         
-        if earnings_data and len(earnings_data) > 0:
-            for item in earnings_data:
-                date_str = item.get("date")
-                if date_str:
-                    e_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                    if e_date >= datetime.now().date():
-                        next_date = date_str
-                        days_until = (e_date - datetime.now().date()).days
-                        is_warning = days_until <= 5
-            
-            # If all are in past
-            if not next_date:
-                next_date = earnings_data[0].get("date")
+        calendar = stock.calendar
+        if calendar and 'Earnings Date' in calendar and len(calendar['Earnings Date']) > 0:
+            e_date = calendar['Earnings Date'][0]
+            next_date = e_date.strftime("%Y-%m-%d")
+            days_until = (e_date - datetime.now().date()).days
+            is_warning = days_until <= 5
                 
         # 2. Analyst Consensus
-        analyst_res = requests.get(f"https://financialmodelingprep.com/api/v3/analyst-stock-recommendations/{ticker}?apikey={fmp_key}", timeout=5)
-        analyst_data = analyst_res.json() if analyst_res.status_code == 200 else []
+        info = stock.info
+        rec_key = info.get('recommendationKey', 'none')
         
-        analyst_info = None
-        if analyst_data and len(analyst_data) > 0:
-            latest = analyst_data[0]
-            buy_count = latest.get("analystRatingsbuy", 0) + latest.get("analystRatingsStrongBuy", 0)
-            total_count = buy_count + latest.get("analystRatingsHold", 0) + latest.get("analystRatingsSell", 0) + latest.get("analystRatingsStrongSell", 0)
+        if rec_key in ['strong_buy', 'buy']:
+            consensus = "BUY"
+        elif rec_key in ['underperform', 'sell', 'strong_sell']:
+            consensus = "SELL"
+        elif rec_key == 'none':
+            consensus = "UNKNOWN"
+        else:
+            consensus = "HOLD"
             
-            analyst_info = {
-                "buy_count": buy_count,
-                "total_count": total_count,
-                "consensus": "BUY" if (buy_count / max(total_count, 1)) > 0.5 else "HOLD"
-            }
+        analyst_info = {
+            "buy_count": 0, # yfinance doesn't provide exact counts easily in info
+            "total_count": 0,
+            "consensus": consensus
+        }
             
         # 3. Surprises
-        surp_res = requests.get(f"https://financialmodelingprep.com/api/v3/earnings-surprises/{ticker}?apikey={fmp_key}", timeout=5)
-        surp_data = surp_res.json() if surp_res.status_code == 200 else []
-        
         beat_rate = None
-        if surp_data and len(surp_data) > 0:
-            recent = surp_data[:8]
-            beats = sum(1 for q in recent if q.get("actualEarningResult", 0) > q.get("estimatedEarning", 0))
-            beat_rate = round(beats / len(recent), 2)
+        quarters_checked = 0
+        try:
+            earnings_df = stock.earnings_dates
+            if earnings_df is not None and not earnings_df.empty:
+                recent = earnings_df.head(8)
+                quarters_checked = len(recent)
+                # Count where Reported EPS > EPS Estimate
+                beats = 0
+                for _, row in recent.iterrows():
+                    reported = row.get('Reported EPS')
+                    estimate = row.get('EPS Estimate')
+                    # Pandas returns NaN if missing, so we check if they are valid floats
+                    if pd.notna(reported) and pd.notna(estimate):
+                        if reported > estimate:
+                            beats += 1
+                if quarters_checked > 0:
+                    beat_rate = round(beats / quarters_checked, 2)
+        except Exception as e:
+            print(f"Error fetching earnings surprises for {ticker}: {e}")
             
         return {
             "ticker": ticker,
@@ -310,13 +313,14 @@ def get_earnings_info(ticker: str):
             "analyst": analyst_info,
             "historical_beats": {
                 "beat_rate": beat_rate,
-                "quarters_checked": min(len(surp_data) if surp_data else 0, 8)
+                "quarters_checked": quarters_checked
             }
         }
     except Exception as e:
         print(f"Earnings error: {e}")
         traceback.print_exc()
         return {"error": "Failed to fetch earnings info"}
+
 
 @app.get("/api/search")
 def search_tickers(q: str):
