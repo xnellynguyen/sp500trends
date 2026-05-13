@@ -13,7 +13,10 @@ function App() {
   const [suggestions, setSuggestions] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   
-  const [finnhubKey, setFinnhubKey] = useState(localStorage.getItem('FINNHUB_KEY') || import.meta.env.VITE_FINNHUB_KEY || '');
+  const [finnhubKey, setFinnhubKey] = useState(() => {
+    const local = localStorage.getItem('FINNHUB_KEY');
+    return (local && local.trim() !== '') ? local : (import.meta.env.VITE_FINNHUB_KEY || '');
+  });
   const [keyInput, setKeyInput] = useState('');
   const [livePrices, setLivePrices] = useState({});
   const [flashStates, setFlashStates] = useState({});
