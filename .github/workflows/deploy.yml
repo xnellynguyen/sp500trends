@@ -54,7 +54,9 @@ jobs:
         working-directory: frontend
 
       - name: Inject Environment Variables for Vite
-        run: cp .vercel/.env.production.local .env
+        run: |
+          cp .vercel/.env.production.local .env
+          echo "VITE_FINNHUB_KEY=${{ secrets.VITE_FINNHUB_KEY }}" >> .env
         working-directory: frontend
 
       - name: Build Project Artifacts
