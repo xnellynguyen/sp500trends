@@ -56,9 +56,17 @@ function App() {
   const [isFetchingTrending, setIsFetchingTrending] = useState(false);
   const [showTrending, setShowTrending] = useState(false);
   const [expandedCards, setExpandedCards] = useState({});
-  const [notificationsEnabled, setNotificationsEnabled] = useState(
-    typeof Notification !== 'undefined' && Notification.permission === 'granted'
-  );
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+
+  useEffect(() => {
+    try {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        setNotificationsEnabled(true);
+      }
+    } catch (e) {
+      console.warn("Notification API not fully supported or accessible:", e);
+    }
+  }, []);
   
   const isInitialMount = useRef(true);
   const tickersRef = useRef([]);
