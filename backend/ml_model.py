@@ -43,9 +43,19 @@ def create_features(df):
     
     return df
 
-def train_and_save_model(ticker="SPY"):
-    df = fetch_data(ticker)
-    df = create_features(df)
+def train_and_save_model(tickers=["SPY", "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"]):
+    print("Fetching and combining data for multiple tickers to prevent overfitting...")
+    
+    all_data = []
+    for t in tickers:
+        df = fetch_data(t, period="10y")
+        if not df.empty:
+            df = create_features(df)
+            all_data.append(df)
+            
+    # Combine and sort by date so the train/test split works chronologically
+    combined_df = pd.concat(all_data)
+    combined_df = combined_df.sort_index()
     
     features = [
         'Open', 'High', 'Low', 'Close', 'Volume',
@@ -54,21 +64,21 @@ def train_and_save_model(ticker="SPY"):
         'Bollinger_High', 'Bollinger_Low'
     ]
     
-    X = df[features]
-    y = df['Target']
+    X = combined_df[features]
+    y = combined_df['Target']
     
-    # Split into train/test, preserving time series order
-    split_idx = int(len(df) * 0.8)
+    # Split into train/test chronologically
+    split_idx = int(len(combined_df) * 0.8)
     X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
     
-    print("Fine-Tuning Random Forest Classifier using GridSearchCV...")
+    print("Fine-Tuning Random Forest Classifier using GridSearchCV on generalized data...")
     
     param_grid = {
-        'n_estimators': [100, 200, 300],
+        'n_estimators': [100, 200],
         'max_depth': [5, 10, None],
-        'min_samples_split': [2, 10, 20],
-        'class_weight': ['balanced', {0: 1, 1: 1.2}] # Add slight bias toward the massive long-term upside trend
+        'min_samples_split': [10, 20],
+        'class_weight': ['balanced', {0: 1, 1: 1.2}]
     }
     
     rf = RandomForestClassifier(random_state=42)
@@ -85,7 +95,7 @@ def train_and_save_model(ticker="SPY"):
     # Evaluate
     predictions = model.predict(X_test)
     acc = accuracy_score(y_test, predictions)
-    print(f"Model Accuracy on test set: {acc * 100:.2f}%")
+    print(f"Model Accuracy on generalized test set: {acc * 100:.2f}%")
     
     # Save the model
     os.makedirs('models', exist_ok=True)
@@ -93,5 +103,5 @@ def train_and_save_model(ticker="SPY"):
     print("Model saved to models/rf_model.joblib")
 
 if __name__ == "__main__":
-    # We train a general model on SPY (S&P 500 ETF) as our baseline predictor
-    train_and_save_model("SPY")
+    # We train a general model on a basket of tech/market leaders
+    train_and_save_model(["SPY", "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"])

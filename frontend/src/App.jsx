@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { TrendingUp, TrendingDown, Activity, Search, X, Calendar } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Search, X, Calendar, HelpCircle, Settings } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, YAxis, XAxis, Tooltip, CartesianGrid } from 'recharts';
 import './index.css';
 
@@ -30,9 +30,56 @@ function App() {
   const [intradayData, setIntradayData] = useState([]);
   const [isLoadingIntraday, setIsLoadingIntraday] = useState(false);
 
+  // Model parameters
+  const [horizon, setHorizon] = useState('1d');
+  const [useMacro, setUseMacro] = useState(false);
+  const [isFetchingDashboard, setIsFetchingDashboard] = useState(false);
+  
+  const isInitialMount = useRef(true);
+  const tickersRef = useRef([]);
+
+  useEffect(() => {
+    tickersRef.current = tickers;
+  }, [tickers]);
+
   // Fetch initial predictions from our Python backend
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/trending`)
+    if (isInitialMount.current) {
+      fetchTrending();
+      isInitialMount.current = false;
+    } else {
+      recalculateCurrentTickers();
+    }
+  }, [horizon, useMacro]);
+
+  const recalculateCurrentTickers = () => {
+    if (tickersRef.current.length === 0) return;
+    
+    setIsFetchingDashboard(true);
+    const symbols = tickersRef.current.map(t => t.ticker);
+    
+    fetch(`${API_BASE_URL}/api/predict_batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tickers: symbols,
+        horizon: horizon,
+        macro: useMacro ? "true" : "false"
+      })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.results) {
+          setTickers(data.results);
+        }
+      })
+      .catch(err => console.error("Failed to recalculate tickers.", err))
+      .finally(() => setIsFetchingDashboard(false));
+  };
+
+  const fetchTrending = () => {
+    setIsFetchingDashboard(true);
+    fetch(`${API_BASE_URL}/api/trending?horizon=${horizon}&macro=${useMacro}`)
       .then(res => res.json())
       .then(data => {
         if (data.trending) {
@@ -42,8 +89,9 @@ function App() {
           setLivePrices(initialPrices);
         }
       })
-      .catch(err => console.error("Failed to fetch trending from backend. Make sure FastAPI is running.", err));
-  }, []);
+      .catch(err => console.error("Failed to fetch trending from backend. Make sure FastAPI is running.", err))
+      .finally(() => setIsFetchingDashboard(false));
+  };
 
   // Connect to Finnhub WebSocket
   useEffect(() => {
@@ -132,7 +180,7 @@ function App() {
     setSearchQuery('');
     
     try {
-      const res = await fetch(`${API_BASE_URL}/api/predict/${tickerSymbol}`);
+      const res = await fetch(`${API_BASE_URL}/api/predict/${tickerSymbol}?horizon=${horizon}&macro=${useMacro}`);
       if (!res.ok) throw new Error("Not found or model error");
       const data = await res.json();
       
@@ -228,6 +276,53 @@ function App() {
           )}
         </div>
       </header>
+
+      <div className="settings-bar" style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', background: 'var(--card-bg)', padding: '1rem', borderRadius: '12px', border: '1px solid var(--border-color)', alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 'bold' }}>
+          <Settings size={18} /> Model Parameters
+        </div>
+        
+        <div style={{ width: '1px', height: '24px', background: 'var(--border-color)', margin: '0 0.5rem' }}></div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>Horizon:</span>
+          <button 
+            onClick={() => setHorizon('1d')}
+            style={{ cursor: 'pointer', padding: '4px 12px', borderRadius: '20px', fontSize: '0.875rem', border: horizon === '1d' ? '1px solid var(--accent)' : '1px solid var(--border-color)', background: horizon === '1d' ? 'var(--accent)' : 'transparent', color: horizon === '1d' ? '#fff' : 'var(--text-main)', transition: 'all 0.2s' }}
+          >
+            1-Day
+          </button>
+          <button 
+            onClick={() => setHorizon('5d')}
+            style={{ cursor: 'pointer', padding: '4px 12px', borderRadius: '20px', fontSize: '0.875rem', border: horizon === '5d' ? '1px solid var(--accent)' : '1px solid var(--border-color)', background: horizon === '5d' ? 'var(--accent)' : 'transparent', color: horizon === '5d' ? '#fff' : 'var(--text-main)', transition: 'all 0.2s' }}
+          >
+            5-Day
+          </button>
+        </div>
+
+        <div style={{ width: '1px', height: '24px', background: 'var(--border-color)', margin: '0 0.5rem' }}></div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>Macro Features:</span>
+          <button 
+            onClick={() => setUseMacro(false)}
+            style={{ cursor: 'pointer', padding: '4px 12px', borderRadius: '20px', fontSize: '0.875rem', border: !useMacro ? '1px solid var(--accent)' : '1px solid var(--border-color)', background: !useMacro ? 'var(--accent)' : 'transparent', color: !useMacro ? '#fff' : 'var(--text-main)', transition: 'all 0.2s' }}
+          >
+            Off
+          </button>
+          <button 
+            onClick={() => setUseMacro(true)}
+            style={{ cursor: 'pointer', padding: '4px 12px', borderRadius: '20px', fontSize: '0.875rem', border: useMacro ? '1px solid var(--accent)' : '1px solid var(--border-color)', background: useMacro ? 'var(--accent)' : 'transparent', color: useMacro ? '#fff' : 'var(--text-main)', transition: 'all 0.2s' }}
+          >
+            On
+          </button>
+          <div title="If ON, the model will analyze the VIX (Volatility Index) and the S&P 500 trend alongside the stock to avoid bull traps during market panics." style={{ display: 'flex', cursor: 'help', marginLeft: '4px' }}>
+            <HelpCircle size={16} color="var(--text-muted)" />
+          </div>
+        </div>
+        
+        {isFetchingDashboard && <div style={{marginLeft: 'auto', fontSize: '0.875rem', color: 'var(--accent)'}}>Recalculating Models...</div>}
+      </div>
 
       <div className="dashboard">
         {tickers.map(ticker => {
