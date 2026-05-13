@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { TrendingUp, TrendingDown, Activity, Search } from 'lucide-react';
-import { LineChart, Line, ResponsiveContainer, YAxis } from 'recharts';
+import { LineChart, Line, ResponsiveContainer, YAxis, XAxis, Tooltip, CartesianGrid } from 'recharts';
 import './index.css';
 
 const API_BASE_URL = 'http://localhost:8000';
@@ -219,16 +219,41 @@ function App() {
               </p>
               
               {ticker.history && ticker.history.length > 0 && (
-                <div style={{ width: '100%', height: '60px', marginTop: '1rem' }}>
+                <div style={{ width: '100%', height: '220px', marginTop: '1.5rem' }}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={ticker.history}>
-                      <YAxis domain={['dataMin', 'dataMax']} hide />
+                    <LineChart data={ticker.history} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+                      <XAxis 
+                        dataKey="date" 
+                        stroke="var(--text-muted)" 
+                        fontSize={12}
+                        tickMargin={10}
+                        tickFormatter={(str) => {
+                          const date = new Date(str);
+                          return `${date.getMonth()+1}/${date.getDate()}`;
+                        }}
+                      />
+                      <YAxis 
+                        domain={['auto', 'auto']} 
+                        stroke="var(--text-muted)" 
+                        fontSize={12}
+                        tickFormatter={(val) => `$${val}`}
+                        width={60}
+                      />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: 'var(--bg-color)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-main)' }}
+                        itemStyle={{ color: 'var(--text-main)', fontWeight: 'bold' }}
+                        labelStyle={{ color: 'var(--text-muted)', marginBottom: '5px' }}
+                        formatter={(value) => [`$${value.toFixed(2)}`, 'Close Price']}
+                        labelFormatter={(label) => `Date: ${label}`}
+                      />
                       <Line 
                         type="monotone" 
                         dataKey="price" 
                         stroke={ticker.predicted_trend === 'UP' ? 'var(--up-color)' : 'var(--down-color)'} 
                         strokeWidth={2} 
-                        dot={false} 
+                        dot={false}
+                        activeDot={{ r: 6, fill: 'var(--text-main)' }} 
                         isAnimationActive={false}
                       />
                     </LineChart>
