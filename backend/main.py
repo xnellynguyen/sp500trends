@@ -187,5 +187,8 @@ def get_trending():
             res = future.result()
             if res:
                 results.append(res)
+                
+    # Sort by probability (confidence) descending
+    results.sort(key=lambda x: x["confidence"], reverse=True)
             
     return {"trending": results}

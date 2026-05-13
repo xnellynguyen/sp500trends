@@ -2,13 +2,13 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, TimeSeriesSplit, GridSearchCV
 from sklearn.metrics import accuracy_score
 import ta
 import joblib
 import os
 
-def fetch_data(ticker_symbol="SPY", period="5y"):
+def fetch_data(ticker_symbol="SPY", period="10y"):
     print(f"Fetching data for {ticker_symbol}...")
     ticker = yf.Ticker(ticker_symbol)
     df = ticker.history(period=period)
@@ -58,15 +58,29 @@ def train_and_save_model(ticker="SPY"):
     y = df['Target']
     
     # Split into train/test, preserving time series order
-    # For a robust stock model, we shouldn't randomly shuffle, 
-    # but for this basic baseline, we just take the last 20% as test
     split_idx = int(len(df) * 0.8)
     X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
     
-    print("Training Random Forest Classifier...")
-    model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-    model.fit(X_train, y_train)
+    print("Fine-Tuning Random Forest Classifier using GridSearchCV...")
+    
+    param_grid = {
+        'n_estimators': [100, 200, 300],
+        'max_depth': [5, 10, None],
+        'min_samples_split': [2, 10, 20],
+        'class_weight': ['balanced', {0: 1, 1: 1.2}] # Add slight bias toward the massive long-term upside trend
+    }
+    
+    rf = RandomForestClassifier(random_state=42)
+    # Use TimeSeriesSplit for cross-validation to prevent lookahead bias
+    tscv = TimeSeriesSplit(n_splits=3)
+    
+    grid_search = GridSearchCV(estimator=rf, param_grid=param_grid, cv=tscv, n_jobs=-1, scoring='accuracy', verbose=1)
+    grid_search.fit(X_train, y_train)
+    
+    print(f"Best Parameters: {grid_search.best_params_}")
+    
+    model = grid_search.best_estimator_
     
     # Evaluate
     predictions = model.predict(X_test)
