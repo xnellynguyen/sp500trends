@@ -101,6 +101,25 @@ def predict_trend(ticker: str):
         "history": history
     }
 
+@app.get("/api/intraday/{ticker}")
+def get_intraday(ticker: str):
+    try:
+        stock = yf.Ticker(ticker)
+        df = stock.history(period="1d", interval="5m")
+        if df.empty:
+            return {"history": []}
+            
+        history = []
+        # Convert index to localized time if needed, but it's usually timezone-aware
+        for idx, row in df.iterrows():
+            time_str = idx.strftime("%H:%M")
+            history.append({"time": time_str, "price": round(row['Close'], 2)})
+            
+        return {"ticker": ticker, "history": history}
+    except Exception as e:
+        print(f"Intraday error for {ticker}: {e}")
+        return {"history": []}
+
 @app.get("/api/search")
 def search_tickers(q: str):
     try:

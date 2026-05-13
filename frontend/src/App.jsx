@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { TrendingUp, TrendingDown, Activity, Search } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Search, X } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, YAxis, XAxis, Tooltip, CartesianGrid } from 'recharts';
 import './index.css';
 
@@ -17,6 +17,11 @@ function App() {
   const [flashStates, setFlashStates] = useState({});
   const wsRef = useRef(null);
   const searchTimeoutRef = useRef(null);
+
+  // Modal State
+  const [expandedTicker, setExpandedTicker] = useState(null);
+  const [intradayData, setIntradayData] = useState([]);
+  const [isLoadingIntraday, setIsLoadingIntraday] = useState(false);
 
   // Fetch initial predictions from our Python backend
   useEffect(() => {
@@ -110,7 +115,7 @@ function App() {
       } catch (err) {
         console.error("Search error", err);
       }
-    }, 300); // 300ms debounce
+    }, 300);
   };
 
   const handlePredictTicker = async (tickerSymbol) => {
@@ -124,12 +129,10 @@ function App() {
       if (!res.ok) throw new Error("Not found or model error");
       const data = await res.json();
       
-      // Add to our tracked tickers if not already there
       if (!tickers.find(t => t.ticker === data.ticker)) {
         setTickers(prev => [data, ...prev]);
         setLivePrices(prev => ({ ...prev, [data.ticker]: data.current_price }));
         
-        // Subscribe to websocket if active
         if (wsRef.current && wsRef.current.readyState === 1) {
           wsRef.current.send(JSON.stringify({ 'type': 'subscribe', 'symbol': data.ticker }));
         }
@@ -138,6 +141,22 @@ function App() {
       alert(`Error fetching prediction for ${tickerSymbol}.`);
     } finally {
       setIsSearching(false);
+    }
+  };
+
+  const handleCardClick = async (ticker) => {
+    setExpandedTicker(ticker);
+    setIsLoadingIntraday(true);
+    setIntradayData([]);
+    
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/intraday/${ticker.ticker}`);
+      const data = await res.json();
+      setIntradayData(data.history || []);
+    } catch (err) {
+      console.error("Failed to fetch intraday data", err);
+    } finally {
+      setIsLoadingIntraday(false);
     }
   };
 
@@ -203,7 +222,7 @@ function App() {
           const flash = flashStates[ticker.ticker];
           
           return (
-            <div key={ticker.ticker} className="card">
+            <div key={ticker.ticker} className="card" onClick={() => handleCardClick(ticker)} style={{ cursor: 'pointer' }}>
               <div className="card-header">
                 <span className="ticker-name">{ticker.ticker}</span>
                 <div className={`prediction-badge ${ticker.predicted_trend === 'UP' ? 'prediction-up' : 'prediction-down'}`}>
@@ -219,7 +238,7 @@ function App() {
               </p>
               
               {ticker.history && ticker.history.length > 0 && (
-                <div style={{ width: '100%', height: '220px', marginTop: '1.5rem' }}>
+                <div style={{ width: '100%', height: '220px', marginTop: '1.5rem' }} onClick={e => e.stopPropagation()}>
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={ticker.history} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
@@ -264,6 +283,69 @@ function App() {
           );
         })}
       </div>
+
+      {expandedTicker && (
+        <div className="modal-overlay" onClick={() => setExpandedTicker(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setExpandedTicker(null)}>
+              <X size={24} />
+            </button>
+            <div style={{ marginBottom: '2rem' }}>
+              <h2 style={{ fontSize: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {expandedTicker.ticker} Intraday Movement
+              </h2>
+              <p style={{ color: 'var(--text-muted)' }}>1-Day Chart (5-minute intervals)</p>
+            </div>
+            
+            <div style={{ width: '100%', height: '400px' }}>
+              {isLoadingIntraday ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
+                  Loading intraday data...
+                </div>
+              ) : intradayData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={intradayData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+                    <XAxis 
+                      dataKey="time" 
+                      stroke="var(--text-muted)" 
+                      fontSize={12}
+                      tickMargin={10}
+                      minTickGap={30}
+                    />
+                    <YAxis 
+                      domain={['auto', 'auto']} 
+                      stroke="var(--text-muted)" 
+                      fontSize={12}
+                      tickFormatter={(val) => `$${val}`}
+                      width={60}
+                    />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: 'var(--bg-color)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-main)' }}
+                      itemStyle={{ color: 'var(--text-main)', fontWeight: 'bold' }}
+                      labelStyle={{ color: 'var(--text-muted)', marginBottom: '5px' }}
+                      formatter={(value) => [`$${value.toFixed(2)}`, 'Price']}
+                      labelFormatter={(label) => `Time: ${label}`}
+                    />
+                    <Line 
+                      type="monotone" 
+                      dataKey="price" 
+                      stroke="var(--accent)"
+                      strokeWidth={2} 
+                      dot={false}
+                      activeDot={{ r: 6, fill: 'var(--accent)' }} 
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
+                  No intraday data available today.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
