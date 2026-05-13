@@ -171,12 +171,24 @@ body {
 
 .config-banner {
   background: rgba(239, 68, 68, 0.1);
-  border: 1px solid var(--down-color);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(239, 68, 68, 0.3);
   color: #fca5a5;
   padding: 1rem;
-  border-radius: 0.5rem;
+  border-radius: 12px;
   margin-bottom: 2rem;
   text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  animation: slideInDown 0.5s ease-out;
+}
+
+@keyframes slideInDown {
+  from { transform: translateY(-20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
 }
 
 .modal-overlay {
@@ -197,8 +209,61 @@ body {
   border: 1px solid var(--border-color);
   width: 100%;
   max-width: 800px;
+  max-height: 90vh;
+  overflow-y: auto;
   position: relative;
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-color) transparent;
+}
+
+.modal-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.modal-content::-webkit-scrollbar-thumb {
+  background-color: var(--border-color);
+  border-radius: 3px;
+}
+
+.modal-tabs {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-tab {
+  padding: 0.75rem 1.5rem;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+}
+
+.modal-tab:hover {
+  color: var(--text-main);
+}
+
+.modal-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.modal-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+@media (max-width: 768px) {
+  .modal-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .modal-close {
@@ -225,8 +290,7 @@ body {
 .divergence-tag {
   position: absolute;
   top: -10px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 1.5rem;
   background: #fbbf24;
   color: #000;
   padding: 2px 8px;
@@ -237,6 +301,24 @@ body {
   align-items: center;
   gap: 4px;
   z-index: 10;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.earnings-tag {
+  position: absolute;
+  top: -10px;
+  left: 1.5rem;
+  background: var(--down-color);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 10;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
 }
 
 .divergence-subtitle {

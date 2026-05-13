@@ -63,7 +63,46 @@ serve(async (req) => {
     }
   }
 
-  return new Response(JSON.stringify({ message: "Scoring complete", scored: results.length, details: results }), {
+  // 2. Check for upcoming earnings
+  console.log("Checking for upcoming earnings...");
+  const { data: watchlist, error: watchlistError } = await supabase
+    .from("watchlist")
+    .select("ticker, user_id");
+
+  if (!watchlistError && watchlist) {
+    // Get unique tickers
+    const uniqueTickers = [...new Set(watchlist.map(item => item.ticker))];
+    const earningsAlerts = [];
+
+    for (const ticker of uniqueTickers) {
+      try {
+        const res = await fetch(`https://financialmodelingprep.com/api/v3/earning_calendar/${ticker}?apikey=${Deno.env.get("FMP_API_KEY") || finnhubKey}`);
+        const data = await res.json();
+        
+        if (data && data.length > 0) {
+          const next = data[0];
+          const eDate = new Date(next.date);
+          const diffDays = (eDate.getTime() - now.getTime()) / (1000 * 3600 * 24);
+          
+          if (diffDays >= 0 && diffDays <= 5) {
+            console.log(`ALERT: ${ticker} has earnings in ${Math.ceil(diffDays)} days (${next.date})`);
+            earningsAlerts.push({ ticker, days: Math.ceil(diffDays), date: next.date });
+          }
+        }
+      } catch (e) {
+        console.error(`Failed to fetch earnings for ${ticker}`, e);
+      }
+    }
+    
+    // In a real app, you would now loop through watchlist and notify user_ids
+    // For now, we just log it.
+  }
+
+  return new Response(JSON.stringify({ 
+    message: "Scoring and earnings check complete", 
+    scored: results.length, 
+    scoredDetails: results 
+  }), {
     headers: { "Content-Type": "application/json" },
   });
 });

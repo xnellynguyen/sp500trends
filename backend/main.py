@@ -9,6 +9,9 @@ import os
 import ta
 import requests
 import concurrent.futures
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI(title="S&P 500 Trend Predictor API")
 

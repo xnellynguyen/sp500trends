@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { TrendingUp, TrendingDown, Activity, Search, X, Calendar, HelpCircle, Settings, LogOut, AlertTriangle, Trash2, Filter, Plus } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Search, X, Calendar, HelpCircle, Settings, LogOut, AlertTriangle, Trash2, Filter, Plus, Zap } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, YAxis, XAxis, Tooltip, CartesianGrid } from 'recharts';
 import { supabase } from './supabaseClient';
 import './index.css';
@@ -37,6 +37,7 @@ function App() {
 
   // Modal State
   const [expandedTicker, setExpandedTicker] = useState(null);
+  const [activeTab, setActiveTab] = useState('overview');
   const [intradayData, setIntradayData] = useState([]);
   const [isLoadingIntraday, setIsLoadingIntraday] = useState(false);
   const [earningsData, setEarningsData] = useState(null);
@@ -46,13 +47,16 @@ function App() {
   const [horizon, setHorizon] = useState('1d');
   const [useMacro, setUseMacro] = useState(false);
   const [isFetchingDashboard, setIsFetchingDashboard] = useState(false);
-  const [minConfidence, setMinConfidence] = useState(0); // 0, 55, 65, 75
+  const [minConfidence, setMinConfidence] = useState(0); 
+  const [earningsMap, setEarningsMap] = useState({});
+  const [isFetchingEarningsBatch, setIsFetchingEarningsBatch] = useState(false);
   const [sortOption, setSortOption] = useState('confidence'); // 'confidence', 'alphabetical', 'divergence'
   const [winRates, setWinRates] = useState({});
   const [trendingTickers, setTrendingTickers] = useState([]);
   const [isFetchingTrending, setIsFetchingTrending] = useState(false);
   const [showTrending, setShowTrending] = useState(false);
   const [expandedCards, setExpandedCards] = useState({});
+  const [notificationsEnabled, setNotificationsEnabled] = useState(Notification.permission === 'granted');
   
   const isInitialMount = useRef(true);
   const tickersRef = useRef([]);
@@ -85,6 +89,21 @@ function App() {
       }
     }
   }, [horizon, useMacro, session]);
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js')
+        .then(reg => console.log('SW Registered', reg))
+        .catch(err => console.error('SW Registration failed', err));
+    }
+  }, []);
+
+  const requestNotificationPermission = async () => {
+    const permission = await Notification.requestPermission();
+    if (permission === 'granted') {
+      setNotificationsEnabled(true);
+      // Here you would normally register for push and save to DB
+    }
+  };
 
   const logPrediction = async (ticker, horizonStr, trend, confidence, basePrice) => {
     if (!session) return;
@@ -153,6 +172,29 @@ function App() {
     }
   };
 
+  const fetchEarningsForBatch = async (symbols) => {
+    setIsFetchingEarningsBatch(true);
+    const newEarnings = { ...earningsMap };
+    
+    // Fetch in parallel with a small delay to avoid hitting rate limits too fast
+    // though FMP is usually okay with some concurrency
+    const promises = symbols.map(async (symbol) => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/earnings/${symbol}`);
+        const data = await response.json();
+        if (!data.error) {
+          newEarnings[symbol] = data;
+        }
+      } catch (e) {
+        console.error(`Failed to fetch earnings for ${symbol}`, e);
+      }
+    });
+
+    await Promise.all(promises);
+    setEarningsMap(newEarnings);
+    setIsFetchingEarningsBatch(false);
+  };
+
   const loadWatchlist = async () => {
     setIsFetchingDashboard(true);
     try {
@@ -202,7 +244,10 @@ function App() {
       
       setTickers(baseTickers);
       setLivePrices(initialPrices);
-      setIsFetchingDashboard(false); // UI renders immediately!
+      setIsFetchingDashboard(false); 
+      
+      // Fetch earnings for all tickers in background
+      fetchEarningsForBatch(symbols);
 
       // Slow path: fetch the other horizon in the background for divergence detection
       const otherHorizon = horizon === '1d' ? '5d' : '1d';
@@ -450,9 +495,9 @@ function App() {
     setIsSearching(false);
   };
 
-  const openDetailsModal = async (ticker, e) => {
-    if (e) e.stopPropagation();
+  const openDetailsModal = async (ticker) => {
     setExpandedTicker(ticker);
+    setActiveTab('overview');
     setIsLoadingIntraday(true);
     setIntradayData([]);
     setEarningsData(null);
@@ -605,6 +650,16 @@ function App() {
         </div>
       )}
 
+      {/* Global Earnings Warning Banner */}
+      {Object.values(earningsMap).some(e => e.is_warning) && (
+        <div className="config-banner" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--down-color)', color: '#fca5a5', marginBottom: '1.5rem', padding: '0.75rem' }}>
+          <AlertTriangle size={20} />
+          <span>
+            <strong>High Volatility Warning:</strong> {Object.values(earningsMap).filter(e => e.is_warning).length} ticker(s) in your watchlist have earnings within 5 days.
+          </span>
+        </div>
+      )}
+
       <div className="settings-bar" style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', background: 'var(--card-bg)', padding: '1rem', borderRadius: '12px', border: '1px solid var(--border-color)', alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 'bold' }}>
           <Settings size={18} /> Model Parameters
@@ -648,6 +703,16 @@ function App() {
             <HelpCircle size={16} color="var(--text-muted)" />
           </div>
         </div>
+        <div style={{ width: '1px', height: '24px', background: 'var(--border-color)', margin: '0 0.5rem' }}></div>
+
+        <button 
+          onClick={requestNotificationPermission}
+          disabled={notificationsEnabled}
+          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: '1px solid var(--border-color)', color: notificationsEnabled ? 'var(--up-color)' : 'var(--text-muted)', padding: '4px 12px', borderRadius: '20px', cursor: notificationsEnabled ? 'default' : 'pointer' }}
+        >
+          <Zap size={16} color={notificationsEnabled ? 'var(--up-color)' : 'var(--text-muted)'} />
+          {notificationsEnabled ? 'Alerts Enabled' : 'Enable Alerts'}
+        </button>
         
         {isFetchingDashboard && <div style={{marginLeft: 'auto', fontSize: '0.875rem', color: 'var(--accent)'}}>Updating Watchlist...</div>}
       </div>
@@ -688,10 +753,15 @@ function App() {
           }
           
           return (
-            <div key={ticker.ticker} className={`card ${ticker.hasDivergence ? 'card-divergence' : ''}`} onClick={(e) => openDetailsModal(ticker, e)} style={{ cursor: 'pointer' }}>
+            <div key={ticker.ticker} className={`card ${ticker.hasDivergence ? 'card-divergence' : ''}`} onClick={() => openDetailsModal(ticker)} style={{ cursor: 'pointer' }}>
               {ticker.hasDivergence && (
                 <div className="divergence-tag">
                   <AlertTriangle size={14} /> Divergence Alert
+                </div>
+              )}
+              {earningsMap[ticker.ticker]?.is_warning && (
+                <div className="earnings-tag">
+                  <Zap size={14} /> Earnings Soon
                 </div>
               )}
               <div className="card-header">
@@ -701,7 +771,7 @@ function App() {
                     {ticker.predicted_trend === 'UP' ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
                     <span>{ticker.predicted_trend} ({ticker.confidence}%)</span>
                   </div>
-                  <button className="remove-btn" onClick={(e) => removeTicker(ticker.ticker, e)} title="Remove from watchlist">
+                  <button className="remove-btn" onClick={(e) => { e.stopPropagation(); removeTicker(ticker.ticker, e); }} title="Remove from watchlist">
                     <Trash2 size={16} />
                   </button>
                 </div>
@@ -769,7 +839,7 @@ function App() {
                       <span className="live-price">${(livePrices[t.ticker] || t.current_price).toFixed(2)}</span>
                       <button 
                         className="btn" 
-                        onClick={(e) => handleAddTrending(t.ticker, e)}
+                        onClick={(e) => { e.stopPropagation(); handleAddTrending(t.ticker, e); }}
                         style={{ padding: '4px 8px', fontSize: '0.875rem' }}
                       >
                         <Plus size={16} style={{ marginRight: '4px' }}/> Add
@@ -785,7 +855,7 @@ function App() {
 
       {expandedTicker && (
         <div className="modal-overlay" onClick={() => setExpandedTicker(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '700px' }}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setExpandedTicker(null)}>
               <X size={24} />
             </button>
@@ -801,181 +871,201 @@ function App() {
                 <div style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', padding: '6px 12px', background: 'var(--bg-color)', borderRadius: '20px', border: '1px solid var(--border-color)' }}>
                   Active Horizon: {horizon}
                 </div>
-              </div>
-            </div>
-
-            {/* Portfolio Position Tracking */}
-            <div style={{ marginBottom: '2rem', padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-                <div>
-                  <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>My Position</h3>
-                  {expandedTicker.entry_price ? (
-                    <div>
-                      <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                        <div>
-                          <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Avg Cost</p>
-                          <p style={{ fontSize: '1.125rem', fontWeight: 'bold' }}>${expandedTicker.entry_price.toFixed(2)}</p>
-                        </div>
-                        {expandedTicker.entry_date && (
-                          <div>
-                            <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Date</p>
-                            <p style={{ fontSize: '0.875rem' }}>{new Date(expandedTicker.entry_date).toLocaleDateString()}</p>
-                          </div>
-                        )}
-                        {livePrices[expandedTicker.ticker] && (
-                          <div>
-                            <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>P&L</p>
-                            <p style={{ fontSize: '1.125rem', fontWeight: 'bold', color: livePrices[expandedTicker.ticker] >= expandedTicker.entry_price ? 'var(--up-color)' : 'var(--down-color)' }}>
-                              {(livePrices[expandedTicker.ticker] - expandedTicker.entry_price) >= 0 ? '+' : ''}
-                              ${(livePrices[expandedTicker.ticker] - expandedTicker.entry_price).toFixed(2)} 
-                              <span style={{ fontSize: '0.875rem', marginLeft: '0.25rem' }}>
-                                ({( ((livePrices[expandedTicker.ticker] - expandedTicker.entry_price) / expandedTicker.entry_price) * 100 ).toFixed(2)}%)
-                              </span>
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Not tracking a position. Enter your buy details to see P&L.</p>
-                  )}
-                </div>
-                
-                <form 
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    savePosition(expandedTicker.ticker, e.target.elements.price.value, e.target.elements.date.value);
-                  }}
-                  style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', background: 'var(--card-bg)', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}
-                >
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Buy Price ($)</label>
-                    <input name="price" type="number" step="0.01" defaultValue={expandedTicker.entry_price || ''} className="search-input" style={{ width: '100px', padding: '0.375rem 0.5rem', background: 'var(--bg-color)' }} placeholder="0.00" />
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Date</label>
-                    <input name="date" type="date" defaultValue={expandedTicker.entry_date || ''} className="search-input" style={{ width: '140px', padding: '0.375rem 0.5rem', background: 'var(--bg-color)' }} />
-                  </div>
-                  <button type="submit" className="btn" style={{ padding: '0.375rem 0.75rem', height: 'max-content' }}>Save</button>
-                  {expandedTicker.entry_price && (
-                    <button type="button" onClick={() => savePosition(expandedTicker.ticker, null, null)} className="btn" style={{ padding: '0.375rem 0.75rem', height: 'max-content', background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>Clear</button>
-                  )}
-                </form>
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
-              <div style={{ padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>AI Model Trust Score</h3>
-                <div className="win-rate-container" style={{ marginTop: 0 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem', marginBottom: '0.5rem' }}>
-                    <span style={{ color: 'var(--text-muted)' }}>Historical Accuracy</span>
-                    <span style={{ color: 'var(--text-main)', fontWeight: 'bold' }}>
-                      {winRates[expandedTicker.ticker] ? `${winRates[expandedTicker.ticker].rate}% (${winRates[expandedTicker.ticker].total} records)` : 'Building history...'}
+                {winRates[expandedTicker.ticker] && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '6px 12px', background: 'rgba(59, 130, 246, 0.1)', borderRadius: '20px', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
+                    <Activity size={14} color="var(--accent)" />
+                    <span style={{ fontSize: '0.875rem', fontWeight: '600', color: 'var(--accent)' }}>
+                      Trust: {winRates[expandedTicker.ticker].rate}%
                     </span>
                   </div>
-                  <div className="progress-bg" style={{ height: '8px' }}>
-                    <div className="progress-bar" style={{ width: winRates[expandedTicker.ticker] ? `${winRates[expandedTicker.ticker].rate}%` : '0%', background: winRates[expandedTicker.ticker] ? (winRates[expandedTicker.ticker].rate > 50 ? 'var(--up-color)' : 'var(--down-color)') : 'var(--text-muted)' }}></div>
-                  </div>
-                </div>
-              </div>
-              
-              <div style={{ padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>Earnings Intelligence</h3>
-                {isLoadingEarnings ? (
-                  <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading earnings data...</p>
-                ) : earningsData && !earningsData.error ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Next Earnings:</span>
-                      <span style={{ color: earningsData.is_warning ? 'var(--down-color)' : 'var(--text-main)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                        {earningsData.is_warning && <AlertTriangle size={14} />}
-                        {earningsData.next_earnings_date} ({earningsData.days_until} days)
-                      </span>
-                    </div>
-                    {earningsData.analyst && (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Analyst Consensus:</span>
-                        <span style={{ color: earningsData.analyst.consensus === 'BUY' ? 'var(--up-color)' : 'var(--text-main)', fontWeight: 'bold' }}>
-                          {earningsData.analyst.consensus} ({earningsData.analyst.buy_count}/{earningsData.analyst.total_count} Buy)
-                        </span>
-                      </div>
-                    )}
-                    {earningsData.historical_beats && (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Earnings Beat Rate:</span>
-                        <span style={{ color: 'var(--text-main)', fontWeight: 'bold' }}>
-                          {Math.round(earningsData.historical_beats.beat_rate * 100)}% (Last {earningsData.historical_beats.quarters_checked} Qs)
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Failed to load earnings data.</p>
                 )}
               </div>
+            </div>            
+            <div className="modal-tabs">
+              <button 
+                className={`modal-tab ${activeTab === 'overview' ? 'active' : ''}`}
+                onClick={() => setActiveTab('overview')}
+              >
+                Overview & Position
+              </button>
+              <button 
+                className={`modal-tab ${activeTab === 'intelligence' ? 'active' : ''}`}
+                onClick={() => setActiveTab('intelligence')}
+              >
+                Signals & Earnings
+              </button>
             </div>
 
-            {expandedTicker.signals && (
-              <div style={{ marginBottom: '2rem', padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>Signal Confluence Breakdown</h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                  {Object.keys(expandedTicker.signals).map(key => {
-                    const sig = expandedTicker.signals[key];
-                    const info = laymanExplanations[key] || { name: key, desc: "" };
-                    return (
-                      <div key={key} style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
-                        <div className={`prediction-badge ${sig.direction === 'UP' ? 'prediction-up' : sig.direction === 'DOWN' ? 'prediction-down' : ''}`} style={{ padding: '4px 8px', minWidth: '70px', justifyContent: 'center' }}>
-                          {sig.direction === 'UP' ? <TrendingUp size={14} /> : sig.direction === 'DOWN' ? <TrendingDown size={14} /> : '-'} {sig.direction}
-                        </div>
-                        <div>
-                          <p style={{ fontSize: '0.875rem', fontWeight: 'bold', color: 'var(--text-main)', marginBottom: '0.25rem' }}>{info.name} <span style={{ color: 'var(--text-muted)', fontWeight: 'normal', fontSize: '0.75rem', marginLeft: '0.5rem' }}>Value: {sig.value}</span></p>
-                          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{info.desc}</p>
-                        </div>
+            {activeTab === 'overview' && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem' }}>
+                  {/* Portfolio Position Tracking */}
+                  <div style={{ padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
+                      <div style={{ flex: 1, minWidth: '200px' }}>
+                        <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>My Position</h3>
+                        {expandedTicker.entry_price ? (
+                          <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: '1rem' }}>
+                            <div>
+                              <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Avg Cost</p>
+                              <p style={{ fontSize: '1.125rem', fontWeight: 'bold' }}>${expandedTicker.entry_price.toFixed(2)}</p>
+                            </div>
+                            {expandedTicker.entry_date && (
+                              <div>
+                                <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Date</p>
+                                <p style={{ fontSize: '0.875rem' }}>{new Date(expandedTicker.entry_date).toLocaleDateString()}</p>
+                              </div>
+                            )}
+                            {livePrices[expandedTicker.ticker] && (
+                              <div>
+                                <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>P&L</p>
+                                <p style={{ fontSize: '1.125rem', fontWeight: 'bold', color: livePrices[expandedTicker.ticker] >= expandedTicker.entry_price ? 'var(--up-color)' : 'var(--down-color)' }}>
+                                  {(livePrices[expandedTicker.ticker] - expandedTicker.entry_price) >= 0 ? '+' : ''}
+                                  ${(livePrices[expandedTicker.ticker] - expandedTicker.entry_price).toFixed(2)} 
+                                  <span style={{ fontSize: '0.875rem', marginLeft: '0.25rem' }}>
+                                    ({( ((livePrices[expandedTicker.ticker] - expandedTicker.entry_price) / expandedTicker.entry_price) * 100 ).toFixed(2)}%)
+                                  </span>
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1rem' }}>Not tracking a position. Enter your buy details.</p>
+                        )}
                       </div>
-                    );
-                  })}
+                      
+                      <form 
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          savePosition(expandedTicker.ticker, e.target.elements.price.value, e.target.elements.date.value);
+                        }}
+                        style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', background: 'var(--card-bg)', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--border-color)', width: '100%' }}
+                      >
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Buy Price ($)</label>
+                          <input name="price" type="number" step="0.01" defaultValue={expandedTicker.entry_price || ''} className="search-input" style={{ width: '100px', padding: '0.375rem 0.5rem', background: 'var(--bg-color)' }} placeholder="0.00" />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Date</label>
+                          <input name="date" type="date" defaultValue={expandedTicker.entry_date || ''} className="search-input" style={{ width: '140px', padding: '0.375rem 0.5rem', background: 'var(--bg-color)' }} />
+                        </div>
+                        <button type="submit" className="btn" style={{ padding: '0.375rem 0.75rem', height: 'max-content' }}>Save</button>
+                        {expandedTicker.entry_price && (
+                          <button type="button" onClick={() => savePosition(expandedTicker.ticker, null, null)} className="btn" style={{ padding: '0.375rem 0.75rem', height: 'max-content', background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>Clear</button>
+                        )}
+                      </form>
+                    </div>
+                  </div>
+
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
+                  <div style={{ height: '300px' }}>
+                    <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>30-Day Price History</h3>
+                    {expandedTicker.history && expandedTicker.history.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="90%">
+                        <LineChart data={[...expandedTicker.history, { date: new Date().toISOString(), price: livePrices[expandedTicker.ticker] || expandedTicker.current_price }]} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+                          <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={12} tickFormatter={(str) => { const date = new Date(str); return `${date.getMonth()+1}/${date.getDate()}`; }} />
+                          <YAxis domain={['auto', 'auto']} stroke="var(--text-muted)" fontSize={12} tickFormatter={(val) => `$${val}`} width={60} />
+                          <Tooltip 
+                            contentStyle={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '8px' }}
+                            itemStyle={{ color: 'var(--text-main)' }}
+                            labelFormatter={(label) => new Date(label).toLocaleDateString()}
+                          />
+                          <Line type="monotone" dataKey="price" stroke="var(--accent)" strokeWidth={2} dot={false} isAnimationActive={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', border: '1px dashed var(--border-color)', borderRadius: '8px' }}>
+                        No historical data available
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div style={{ flex: '1 1 300px', height: '100%' }}>
+                    <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>Intraday (5-min)</h3>
+                    {isLoadingIntraday ? (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '90%', color: 'var(--text-muted)' }}>Loading intraday data...</div>
+                    ) : intradayData.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="90%">
+                        <LineChart data={intradayData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+                          <XAxis dataKey="time" stroke="var(--text-muted)" fontSize={12} />
+                          <YAxis domain={['auto', 'auto']} stroke="var(--text-muted)" fontSize={12} tickFormatter={(val) => `$${val}`} width={60} />
+                          <Tooltip contentStyle={{ backgroundColor: 'var(--bg-color)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-main)' }} />
+                          <Line type="stepAfter" dataKey="price" stroke="var(--accent)" strokeWidth={2} dot={false} isAnimationActive={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '90%', color: 'var(--text-muted)' }}>No intraday data available</div>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {activeTab === 'intelligence' && (
+              <div className="modal-grid">
+                {expandedTicker.signals && (
+                  <div style={{ padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>Signal Confluence Breakdown</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                      {Object.keys(expandedTicker.signals).map(key => {
+                        const sig = expandedTicker.signals[key];
+                        const info = laymanExplanations[key] || { name: key, desc: "" };
+                        return (
+                          <div key={key} style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
+                            <div className={`prediction-badge ${sig.direction === 'UP' ? 'prediction-up' : sig.direction === 'DOWN' ? 'prediction-down' : ''}`} style={{ padding: '4px 8px', minWidth: '70px', justifyContent: 'center' }}>
+                              {sig.direction === 'UP' ? <TrendingUp size={14} /> : sig.direction === 'DOWN' ? <TrendingDown size={14} /> : '-'} {sig.direction}
+                            </div>
+                            <div>
+                              <p style={{ fontSize: '0.875rem', fontWeight: 'bold', color: 'var(--text-main)', marginBottom: '0.25rem' }}>{info.name} <span style={{ color: 'var(--text-muted)', fontWeight: 'normal', fontSize: '0.75rem', marginLeft: '0.5rem' }}>Value: {sig.value}</span></p>
+                              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{info.desc}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                
+                <div style={{ padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                  <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>Earnings Intelligence</h3>
+                  {isLoadingEarnings ? (
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading earnings data...</p>
+                  ) : earningsData && !earningsData.error ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Next Earnings:</span>
+                        <span style={{ color: earningsData.is_warning ? 'var(--down-color)' : 'var(--text-main)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                          {earningsData.is_warning && <AlertTriangle size={14} />}
+                          {earningsData.next_earnings_date} ({earningsData.days_until} days)
+                        </span>
+                      </div>
+                      {earningsData.analyst && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Analyst Consensus:</span>
+                          <span style={{ color: earningsData.analyst.consensus === 'BUY' ? 'var(--up-color)' : 'var(--text-main)', fontWeight: 'bold' }}>
+                            {earningsData.analyst.consensus} ({earningsData.analyst.buy_count}/{earningsData.analyst.total_count} Buy)
+                          </span>
+                        </div>
+                      )}
+                      {earningsData.historical_beats && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Earnings Beat Rate:</span>
+                          <span style={{ color: 'var(--text-main)', fontWeight: 'bold' }}>
+                            {Math.round(earningsData.historical_beats.beat_rate * 100)}% (Last {earningsData.historical_beats.quarters_checked} Qs)
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Failed to load earnings data.</p>
+                  )}
                 </div>
               </div>
             )}
-
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', height: '300px' }}>
-              <div style={{ flex: '1 1 300px', height: '100%' }}>
-                <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>30-Day History</h3>
-                {expandedTicker.history && expandedTicker.history.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="90%">
-                    <LineChart data={[...expandedTicker.history, { date: new Date().toISOString(), price: livePrices[expandedTicker.ticker] || expandedTicker.current_price }]} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
-                      <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={12} tickFormatter={(str) => { const date = new Date(str); return `${date.getMonth()+1}/${date.getDate()}`; }} />
-                      <YAxis domain={['auto', 'auto']} stroke="var(--text-muted)" fontSize={12} tickFormatter={(val) => `$${val}`} width={60} />
-                      <Tooltip contentStyle={{ backgroundColor: 'var(--bg-color)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-main)' }} />
-                      <Line type="monotone" dataKey="price" stroke={expandedTicker.predicted_trend === 'UP' ? 'var(--up-color)' : 'var(--down-color)'} strokeWidth={2} dot={false} activeDot={{ r: 6, fill: 'var(--text-main)' }} isAnimationActive={false} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '90%', color: 'var(--text-muted)' }}>No historical data available</div>
-                )}
-              </div>
-
-              <div style={{ flex: '1 1 300px', height: '100%' }}>
-                <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>Intraday (5-min)</h3>
-                {isLoadingIntraday ? (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '90%', color: 'var(--text-muted)' }}>Loading intraday data...</div>
-                ) : intradayData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="90%">
-                    <LineChart data={intradayData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
-                      <XAxis dataKey="time" stroke="var(--text-muted)" fontSize={12} />
-                      <YAxis domain={['auto', 'auto']} stroke="var(--text-muted)" fontSize={12} tickFormatter={(val) => `$${val}`} width={60} />
-                      <Tooltip contentStyle={{ backgroundColor: 'var(--bg-color)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-main)' }} />
-                      <Line type="stepAfter" dataKey="price" stroke="var(--accent)" strokeWidth={2} dot={false} isAnimationActive={false} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '90%', color: 'var(--text-muted)' }}>No intraday data available</div>
-                )}
-              </div>
-            </div>
 
           </div>
         </div>
