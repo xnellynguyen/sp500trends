@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { TrendingUp, TrendingDown, Activity, Search, X, Calendar, HelpCircle, Settings } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Search, X, Calendar, HelpCircle, Settings, LogOut, AlertTriangle, Trash2, Filter } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, YAxis, XAxis, Tooltip, CartesianGrid } from 'recharts';
+import { supabase } from './supabaseClient';
 import './index.css';
 
-const API_BASE_URL = window.location.hostname === 'localhost' 
-  ? 'http://localhost:8000' 
-  : 'https://sp500-predictor-374424962069.us-central1.run.app';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://sp500-predictor-697399258111.us-central1.run.app';
 
 function App() {
+  const [session, setSession] = useState(null);
   const [tickers, setTickers] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [suggestions, setSuggestions] = useState([]);
@@ -39,68 +39,232 @@ function App() {
   const [horizon, setHorizon] = useState('1d');
   const [useMacro, setUseMacro] = useState(false);
   const [isFetchingDashboard, setIsFetchingDashboard] = useState(false);
+  const [minConfidence, setMinConfidence] = useState(0); // 0, 55, 65, 75
+  const [sortOption, setSortOption] = useState('confidence'); // 'confidence', 'alphabetical', 'divergence'
+  const [winRates, setWinRates] = useState({});
+  const [trendingTickers, setTrendingTickers] = useState([]);
+  const [isFetchingTrending, setIsFetchingTrending] = useState(false);
+  const [showTrending, setShowTrending] = useState(false);
   
   const isInitialMount = useRef(true);
   const tickersRef = useRef([]);
 
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
     tickersRef.current = tickers;
   }, [tickers]);
 
-  // Fetch initial predictions from our Python backend
   useEffect(() => {
-    if (isInitialMount.current) {
-      fetchTrending();
-      isInitialMount.current = false;
-    } else {
-      recalculateCurrentTickers();
+    if (session) {
+      if (isInitialMount.current) {
+        loadWatchlist();
+        isInitialMount.current = false;
+      } else {
+        loadWatchlist(); // Reload on parameter change
+      }
     }
-  }, [horizon, useMacro]);
+  }, [horizon, useMacro, session]);
 
-  const recalculateCurrentTickers = () => {
-    if (tickersRef.current.length === 0) return;
-    
-    setIsFetchingDashboard(true);
-    const symbols = tickersRef.current.map(t => t.ticker);
-    
-    fetch(`${API_BASE_URL}/api/predict_batch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tickers: symbols,
-        horizon: horizon,
-        macro: useMacro ? "true" : "false"
-      })
-    })
-      .then(res => res.json())
-      .then(data => {
-        if (data.results) {
-          setTickers(data.results);
-        }
-      })
-      .catch(err => console.error("Failed to recalculate tickers.", err))
-      .finally(() => setIsFetchingDashboard(false));
+  const logPrediction = async (ticker, horizonStr, trend, confidence, basePrice) => {
+    if (!session) return;
+    try {
+      await supabase.from('predictions').insert({
+        user_id: session.user.id,
+        ticker,
+        horizon: horizonStr,
+        predicted_direction: trend,
+        confidence: confidence / 100,
+        base_price: basePrice
+      });
+    } catch (e) {
+      console.error("Log error", e);
+    }
   };
 
-  const fetchTrending = () => {
+  const loadWinRates = async () => {
+    if (!session) return;
+    try {
+      const { data, error } = await supabase
+        .from('predictions')
+        .select('ticker, resolved_correctly')
+        .eq('user_id', session.user.id)
+        .not('resolved_correctly', 'is', null);
+
+      if (error) throw error;
+      
+      const rates = {};
+      data.forEach(p => {
+        if (!rates[p.ticker]) rates[p.ticker] = { total: 0, wins: 0 };
+        rates[p.ticker].total += 1;
+        if (p.resolved_correctly) rates[p.ticker].wins += 1;
+      });
+      
+      const formatted = {};
+      Object.keys(rates).forEach(t => {
+        formatted[t] = {
+          rate: Math.round((rates[t].wins / rates[t].total) * 100),
+          total: rates[t].total
+        };
+      });
+      
+      setWinRates(formatted);
+    } catch (e) {
+      console.error("Failed to load win rates", e);
+    }
+  };
+
+  const loadWatchlist = async () => {
     setIsFetchingDashboard(true);
-    fetch(`${API_BASE_URL}/api/trending?horizon=${horizon}&macro=${useMacro}`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.trending) {
-          setTickers(data.trending);
-          const initialPrices = {};
-          data.trending.forEach(t => initialPrices[t.ticker] = t.current_price);
-          setLivePrices(initialPrices);
+    try {
+      const { data, error } = await supabase
+        .from('watchlist')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .order('added_at', { ascending: true });
+        
+      if (error) throw error;
+      
+      if (data.length === 0) {
+        setTickers([]);
+        setIsFetchingDashboard(false);
+        return;
+      }
+      
+      loadWinRates();
+      
+      const symbols = data.map(d => d.ticker);
+      
+      const [res1d, res5d] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/predict_batch`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tickers: symbols, horizon: '1d', macro: useMacro ? "true" : "false" })
+        }).then(r => r.json()),
+        fetch(`${API_BASE_URL}/api/predict_batch`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tickers: symbols, horizon: '5d', macro: useMacro ? "true" : "false" })
+        }).then(r => r.json())
+      ]);
+      
+      const initialPrices = { ...livePrices };
+      
+      const merged = (res1d.results || []).map(t1d => {
+        const t5d = (res5d.results || []).find(t => t.ticker === t1d.ticker);
+        const hasDivergence = t5d && t1d.predicted_trend !== t5d.predicted_trend;
+        
+        logPrediction(t1d.ticker, '1d', t1d.predicted_trend, t1d.confidence, t1d.current_price);
+        if (t5d) logPrediction(t5d.ticker, '5d', t5d.predicted_trend, t5d.confidence, t5d.current_price);
+        
+        if (!initialPrices[t1d.ticker]) {
+          initialPrices[t1d.ticker] = t1d.current_price;
         }
-      })
-      .catch(err => console.error("Failed to fetch trending from backend. Make sure FastAPI is running.", err))
-      .finally(() => setIsFetchingDashboard(false));
+
+        const mainData = horizon === '1d' ? t1d : (t5d || t1d);
+        
+        return {
+          ...mainData,
+          trend_1d: t1d.predicted_trend,
+          trend_5d: t5d ? t5d.predicted_trend : null,
+          hasDivergence,
+          // Track 30d history? The DB does this.
+        };
+      });
+      
+      setTickers(merged);
+      setLivePrices(initialPrices);
+
+      if (wsRef.current && wsRef.current.readyState === 1) {
+        symbols.forEach(sym => {
+          wsRef.current.send(JSON.stringify({ 'type': 'subscribe', 'symbol': sym }));
+        });
+      }
+    } catch (err) {
+      console.error("Failed to load watchlist.", err);
+    } finally {
+      setIsFetchingDashboard(false);
+    }
+  };
+
+  const addTicker = async (symbol) => {
+    if (tickers.find(t => t.ticker === symbol)) return;
+    try {
+      await supabase.from('watchlist').insert({ user_id: session.user.id, ticker: symbol });
+      loadWatchlist();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const removeTicker = async (symbol, e) => {
+    e.stopPropagation();
+    try {
+      await supabase.from('watchlist').delete().eq('user_id', session.user.id).eq('ticker', symbol);
+      setTickers(tickers.filter(t => t.ticker !== symbol));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const loadTrending = async () => {
+    setIsFetchingTrending(true);
+    setShowTrending(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/trending?horizon=${horizon}&macro=${useMacro ? 'true' : 'false'}`);
+      const data = await res.json();
+      
+      const newInitialPrices = { ...livePrices };
+      (data.trending || []).forEach(t => {
+        if (!newInitialPrices[t.ticker]) newInitialPrices[t.ticker] = t.current_price;
+      });
+      setLivePrices(newInitialPrices);
+      setTrendingTickers(data.trending || []);
+    } catch (err) {
+      console.error("Failed to load trending", err);
+    } finally {
+      setIsFetchingTrending(false);
+    }
+  };
+
+  const handleToggleTrending = () => {
+    if (showTrending) {
+      setShowTrending(false);
+    } else {
+      if (trendingTickers.length > 0) {
+        setShowTrending(true);
+      } else {
+        loadTrending();
+      }
+    }
+  };
+
+  const loadPreset = async (presetTickers) => {
+    setIsFetchingDashboard(true);
+    try {
+      for (const t of presetTickers) {
+        await supabase.from('watchlist').insert({ user_id: session.user.id, ticker: t });
+      }
+      loadWatchlist();
+    } catch (e) {
+      console.error(e);
+      setIsFetchingDashboard(false);
+    }
   };
 
   // Connect to Finnhub WebSocket
   useEffect(() => {
-    if (!finnhubKey) return;
+    if (!finnhubKey || !session) return;
 
     const ws = new WebSocket(`wss://ws.finnhub.io?token=${finnhubKey}`);
     wsRef.current = ws;
@@ -152,11 +316,11 @@ function App() {
         ws.close();
       }
     };
-  }, [finnhubKey, tickers]);
+  }, [finnhubKey, tickers, session]);
 
-  // Mock ticking if no API key is provided (for demonstration)
+  // Mock ticking if no API key is provided
   useEffect(() => {
-    if (finnhubKey) return;
+    if (finnhubKey || !session) return;
     const interval = setInterval(() => {
       const newFlashStates = {};
       
@@ -180,7 +344,7 @@ function App() {
       }, 500);
     }, 2000);
     return () => clearInterval(interval);
-  }, [finnhubKey]);
+  }, [finnhubKey, session]);
 
   // Search logic
   const handleSearchChange = (e) => {
@@ -211,24 +375,8 @@ function App() {
     setSuggestions([]);
     setSearchQuery('');
     
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/predict/${tickerSymbol}?horizon=${horizon}&macro=${useMacro}`);
-      if (!res.ok) throw new Error("Not found or model error");
-      const data = await res.json();
-      
-      if (!tickers.find(t => t.ticker === data.ticker)) {
-        setTickers(prev => [data, ...prev]);
-        setLivePrices(prev => ({ ...prev, [data.ticker]: data.current_price }));
-        
-        if (wsRef.current && wsRef.current.readyState === 1) {
-          wsRef.current.send(JSON.stringify({ 'type': 'subscribe', 'symbol': data.ticker }));
-        }
-      }
-    } catch (err) {
-      alert(`Error fetching prediction for ${tickerSymbol}.`);
-    } finally {
-      setIsSearching(false);
-    }
+    await addTicker(tickerSymbol);
+    setIsSearching(false);
   };
 
   const handleCardClick = async (ticker) => {
@@ -251,6 +399,47 @@ function App() {
     localStorage.setItem('FINNHUB_KEY', keyInput);
     setFinnhubKey(keyInput);
   };
+
+  const signInWithGoogle = async () => {
+    await supabase.auth.signInWithOAuth({ provider: 'google' });
+  };
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+  };
+
+  if (!session) {
+    return (
+      <div className="container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', textAlign: 'center' }}>
+        <Activity size={64} color="var(--accent)" style={{ marginBottom: '1rem' }} />
+        <h1 className="title" style={{ fontSize: '2.5rem', marginBottom: '1rem', justifyContent: 'center' }}>AI Trend Predictor</h1>
+        <p style={{ color: 'var(--text-muted)', marginBottom: '2rem', maxWidth: '400px' }}>
+          Track your personal watchlist with AI-driven insights. Get real-time probability scores and 1-day vs 5-day divergence alerts based on a proven machine learning model.
+        </p>
+        <button onClick={signInWithGoogle} className="btn" style={{ fontSize: '1.1rem', padding: '12px 24px', display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'white', color: '#333' }}>
+          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="18" alt="Google" />
+          Sign in with Google
+        </button>
+      </div>
+    );
+  }
+
+  const upCount = tickers.filter(t => t.predicted_trend === 'UP').length;
+  const downCount = tickers.filter(t => t.predicted_trend === 'DOWN').length;
+  const netBias = upCount > downCount ? 'Net bullish' : downCount > upCount ? 'Net bearish' : 'Mixed';
+  const divergenceCount = tickers.filter(t => t.hasDivergence).length;
+
+  let visibleTickers = tickers.filter(t => t.confidence >= minConfidence);
+  
+  if (sortOption === 'confidence') {
+    visibleTickers.sort((a, b) => b.confidence - a.confidence);
+  } else if (sortOption === 'alphabetical') {
+    visibleTickers.sort((a, b) => a.ticker.localeCompare(b.ticker));
+  } else if (sortOption === 'divergence') {
+    visibleTickers.sort((a, b) => (b.hasDivergence ? 1 : 0) - (a.hasDivergence ? 1 : 0));
+  }
+
+  const hiddenCount = tickers.length - visibleTickers.length;
 
   return (
     <div className="container">
@@ -277,37 +466,82 @@ function App() {
             <span>{currentDate}</span>
           </div>
         </div>
-        <div className="search-container" style={{ position: 'relative', marginTop: '0.5rem' }}>
-          <form onSubmit={(e) => { e.preventDefault(); handlePredictTicker(searchQuery); }} style={{ display: 'flex', gap: '0.5rem' }}>
-            <input 
-              type="text" 
-              className="search-input" 
-              placeholder="Search ticker or name (e.g. Apple)" 
-              value={searchQuery}
-              onChange={handleSearchChange}
-              disabled={isSearching}
-            />
-            <button type="submit" className="btn" disabled={isSearching}>
-              {isSearching ? '...' : <Search size={18} />}
-            </button>
-          </form>
-          
-          {suggestions.length > 0 && (
-            <div className="suggestions-dropdown">
-              {suggestions.map((s, idx) => (
-                <div 
-                  key={idx} 
-                  className="suggestion-item"
-                  onClick={() => handlePredictTicker(s.symbol)}
-                >
-                  <span className="suggestion-symbol">{s.symbol}</span>
-                  <span className="suggestion-name">{s.name}</span>
-                </div>
-              ))}
-            </div>
-          )}
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          <div className="search-container" style={{ position: 'relative', marginTop: '0.5rem' }}>
+            <form onSubmit={(e) => { e.preventDefault(); handlePredictTicker(searchQuery); }} style={{ display: 'flex', gap: '0.5rem' }}>
+              <input 
+                type="text" 
+                className="search-input" 
+                placeholder="Add ticker (e.g. Apple)" 
+                value={searchQuery}
+                onChange={handleSearchChange}
+                disabled={isSearching}
+              />
+              <button type="submit" className="btn" disabled={isSearching}>
+                {isSearching ? '...' : <Search size={18} />}
+              </button>
+            </form>
+            
+            {suggestions.length > 0 && (
+              <div className="suggestions-dropdown">
+                {suggestions.map((s, idx) => (
+                  <div 
+                    key={idx} 
+                    className="suggestion-item"
+                    onClick={() => handlePredictTicker(s.symbol)}
+                  >
+                    <span className="suggestion-symbol">{s.symbol}</span>
+                    <span className="suggestion-name">{s.name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <button onClick={signOut} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
+            <LogOut size={16} /> Sign out
+          </button>
         </div>
       </header>
+
+      {tickers.length > 0 && (
+        <div className="portfolio-summary">
+          <div className="summary-item">
+            <span className="summary-label">Portfolio Bias</span>
+            <span className={`summary-value ${netBias === 'Net bullish' ? 'prediction-up' : netBias === 'Net bearish' ? 'prediction-down' : ''}`}>
+              {netBias}
+            </span>
+          </div>
+          <div className="summary-item">
+            <span className="summary-label">Signals</span>
+            <span className="summary-value" style={{ fontSize: '1rem' }}>
+              <span style={{ color: 'var(--up-color)' }}>{upCount} UP</span> · <span style={{ color: 'var(--down-color)' }}>{downCount} DOWN</span>
+            </span>
+          </div>
+          <div className="summary-item">
+            <span className="summary-label">Divergences</span>
+            <span className="summary-value" style={{ color: divergenceCount > 0 ? '#fbbf24' : 'var(--text-muted)' }}>
+              {divergenceCount} detected
+            </span>
+          </div>
+          <div className="summary-item" style={{ flexGrow: 1, display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
+             <select className="search-input" value={sortOption} onChange={(e) => setSortOption(e.target.value)} style={{ padding: '0.25rem 0.5rem' }}>
+               <option value="confidence">Sort by Confidence</option>
+               <option value="alphabetical">Sort Alphabetical</option>
+               <option value="divergence">Divergence First</option>
+             </select>
+             
+             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '0.375rem', padding: '0.25rem 0.5rem' }}>
+               <Filter size={14} color="var(--text-muted)" />
+               <select className="search-input" value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))} style={{ border: 'none', background: 'transparent', padding: 0 }}>
+                 <option value={0}>All Confidences</option>
+                 <option value={55}>Min 55%</option>
+                 <option value={65}>Min 65%</option>
+                 <option value={75}>Min 75%</option>
+               </select>
+             </div>
+          </div>
+        </div>
+      )}
 
       <div className="settings-bar" style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', background: 'var(--card-bg)', padding: '1rem', borderRadius: '12px', border: '1px solid var(--border-color)', alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 'bold' }}>
@@ -353,39 +587,78 @@ function App() {
           </div>
         </div>
         
-        {isFetchingDashboard && <div style={{marginLeft: 'auto', fontSize: '0.875rem', color: 'var(--accent)'}}>Recalculating Models...</div>}
+        {isFetchingDashboard && <div style={{marginLeft: 'auto', fontSize: '0.875rem', color: 'var(--accent)'}}>Updating Watchlist...</div>}
       </div>
 
       <div className="dashboard">
-        {tickers.length === 0 && (
+        {tickers.length === 0 && !isFetchingDashboard && (
           <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '4rem 1rem' }}>
-            <Activity size={48} color="var(--accent)" style={{ marginBottom: '1rem', animation: 'pulse 2s infinite' }} />
-            <h2 style={{ color: 'var(--text-main)', marginBottom: '0.5rem' }}>Loading Predictions...</h2>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
-              {isFetchingDashboard ? 'Waking up the server & downloading live market data. This may take up to a minute on first load.' : 'No data available. Check your connection.'}
-            </p>
+            <h2 style={{ color: 'var(--text-main)', marginBottom: '1rem' }}>Welcome to your Watchlist</h2>
+            <p style={{ color: 'var(--text-muted)', marginBottom: '2rem' }}>Add your first ticker or choose a preset to get started.</p>
+            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+              <button className="btn" style={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)' }} onClick={() => loadPreset(['AAPL', 'MSFT', 'GOOGL', 'META', 'AMZN'])}>Big Tech</button>
+              <button className="btn" style={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)' }} onClick={() => loadPreset(['TSLA', 'NIO', 'RIVN', 'LCID', 'F'])}>EV Sector</button>
+              <button className="btn" style={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)' }} onClick={() => loadPreset(['JNJ', 'KO', 'PG', 'VZ', 'T'])}>Dividend Plays</button>
+            </div>
           </div>
         )}
-        {tickers.map(ticker => {
+        {tickers.length === 0 && isFetchingDashboard && (
+          <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '4rem 1rem' }}>
+            <Activity size={48} color="var(--accent)" style={{ marginBottom: '1rem', animation: 'pulse 2s infinite' }} />
+            <h2 style={{ color: 'var(--text-main)', marginBottom: '0.5rem' }}>Loading Watchlist...</h2>
+          </div>
+        )}
+        
+        {visibleTickers.map(ticker => {
           const price = livePrices[ticker.ticker] || ticker.current_price;
           const flash = flashStates[ticker.ticker];
           
           return (
-            <div key={ticker.ticker} className="card" onClick={() => handleCardClick(ticker)} style={{ cursor: 'pointer' }}>
+            <div key={ticker.ticker} className={`card ${ticker.hasDivergence ? 'card-divergence' : ''}`} onClick={() => handleCardClick(ticker)} style={{ cursor: 'pointer' }}>
+              {ticker.hasDivergence && (
+                <div className="divergence-tag">
+                  <AlertTriangle size={14} /> Divergence Alert
+                </div>
+              )}
               <div className="card-header">
                 <span className="ticker-name">{ticker.ticker}</span>
-                <div className={`prediction-badge ${ticker.predicted_trend === 'UP' ? 'prediction-up' : 'prediction-down'}`}>
-                  {ticker.predicted_trend === 'UP' ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-                  <span>{ticker.predicted_trend} ({ticker.confidence}%)</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <div className={`prediction-badge ${ticker.predicted_trend === 'UP' ? 'prediction-up' : 'prediction-down'}`}>
+                    {ticker.predicted_trend === 'UP' ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
+                    <span>{ticker.predicted_trend} ({ticker.confidence}%)</span>
+                  </div>
+                  <button className="remove-btn" onClick={(e) => removeTicker(ticker.ticker, e)} title="Remove from watchlist">
+                    <Trash2 size={16} />
+                  </button>
                 </div>
               </div>
-              <div className={`live-price ${flash === 'up' ? 'flash-up' : flash === 'down' ? 'flash-down' : ''}`}>
+              
+              {ticker.hasDivergence && (
+                <div className="divergence-subtitle">
+                  1-day {ticker.trend_1d} · 5-day {ticker.trend_5d}
+                </div>
+              )}
+
+              <div className={`live-price ${flash === 'up' ? 'flash-up' : flash === 'down' ? 'flash-down' : ''}`} style={{ marginTop: ticker.hasDivergence ? '0.5rem' : '0' }}>
                 ${price.toFixed(2)}
               </div>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
                 AI Model Analysis indicates a {ticker.confidence}% probability of a {ticker.predicted_trend.toLowerCase()} trend.
               </p>
               
+              {/* Win Rate history logic */}
+              <div className="win-rate-container">
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '0.25rem' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Model Trust Score</span>
+                  <span style={{ color: 'var(--text-muted)' }}>
+                    {winRates[ticker.ticker] ? `${winRates[ticker.ticker].rate}% (${winRates[ticker.ticker].total} records)` : 'Building history...'}
+                  </span>
+                </div>
+                <div className="progress-bg">
+                  <div className="progress-bar" style={{ width: winRates[ticker.ticker] ? `${winRates[ticker.ticker].rate}%` : '0%', background: winRates[ticker.ticker] ? (winRates[ticker.ticker].rate > 50 ? 'var(--up-color)' : 'var(--down-color)') : 'var(--text-muted)' }}></div>
+                </div>
+              </div>
+
               {ticker.history && ticker.history.length > 0 && (
                 <div style={{ width: '100%', height: '220px', marginTop: '1.5rem' }} onClick={e => e.stopPropagation()}>
                   <ResponsiveContainer width="100%" height="100%">
@@ -431,6 +704,72 @@ function App() {
             </div>
           );
         })}
+      </div>
+      
+      {hiddenCount > 0 && (
+        <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.875rem', marginTop: '-1rem', marginBottom: '2rem' }}>
+          {hiddenCount} ticker{hiddenCount !== 1 ? 's' : ''} hidden by confidence filter.
+        </div>
+      )}
+
+      {/* Discover Trending Section */}
+      <div style={{ marginTop: '3rem', borderTop: '1px solid var(--border-color)', paddingTop: '2rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+          <h2 style={{ fontSize: '1.25rem', color: 'var(--text-main)' }}>Discover Trending Opportunities</h2>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            {showTrending && (
+              <button className="btn" onClick={loadTrending} disabled={isFetchingTrending} style={{ padding: '8px 16px', fontSize: '0.875rem', background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
+                Refresh
+              </button>
+            )}
+            <button className="btn" onClick={handleToggleTrending} disabled={isFetchingTrending} style={{ padding: '8px 16px', fontSize: '0.875rem' }}>
+              {isFetchingTrending ? 'Loading...' : (showTrending ? 'Hide Trending' : 'Load Scraped Tickers')}
+            </button>
+          </div>
+        </div>
+        
+        {showTrending && (
+          <div className="dashboard">
+            {isFetchingTrending && trendingTickers.length === 0 ? (
+              <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '2rem' }}>
+                <Activity size={32} color="var(--accent)" style={{ marginBottom: '1rem', animation: 'pulse 2s infinite' }} />
+                <p style={{ color: 'var(--text-muted)' }}>Scraping Yahoo Finance...</p>
+              </div>
+            ) : (
+              trendingTickers.map(ticker => {
+                const price = livePrices[ticker.ticker] || ticker.current_price;
+                const flash = flashStates[ticker.ticker];
+                const inWatchlist = tickers.some(t => t.ticker === ticker.ticker);
+                
+                return (
+                  <div key={`trend-${ticker.ticker}`} className="card" onClick={() => handleCardClick(ticker)} style={{ cursor: 'pointer' }}>
+                    <div className="card-header">
+                      <span className="ticker-name">{ticker.ticker}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <div className={`prediction-badge ${ticker.predicted_trend === 'UP' ? 'prediction-up' : 'prediction-down'}`}>
+                          {ticker.predicted_trend === 'UP' ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
+                          <span>{ticker.predicted_trend} ({ticker.confidence}%)</span>
+                        </div>
+                        <button 
+                          className="btn" 
+                          onClick={(e) => { e.stopPropagation(); addTicker(ticker.ticker); }} 
+                          disabled={inWatchlist}
+                          style={{ padding: '4px 8px', fontSize: '0.75rem', opacity: inWatchlist ? 0.5 : 1 }}
+                        >
+                          {inWatchlist ? 'Added' : 'Add'}
+                        </button>
+                      </div>
+                    </div>
+                    
+                    <div className={`live-price ${flash === 'up' ? 'flash-up' : flash === 'down' ? 'flash-down' : ''}`}>
+                      ${price.toFixed(2)}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
 
       {expandedTicker && (
