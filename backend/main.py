@@ -6,6 +6,7 @@ import joblib
 import os
 import ta
 import requests
+import concurrent.futures
 
 app = FastAPI(title="S&P 500 Trend Predictor API")
 
@@ -160,7 +161,8 @@ def get_trending():
     trending_symbols = trending_symbols[:12]
     
     results = []
-    for t in trending_symbols:
+    
+    def process_ticker(t):
         try:
             data = get_features_for_ticker(t)
             if data:
@@ -168,14 +170,22 @@ def get_trending():
                 pred = model.predict(features)[0]
                 prob = model.predict_proba(features)[0]
                 conf = prob[pred]
-                results.append({
+                return {
                     "ticker": t,
                     "current_price": round(close_price, 2),
                     "predicted_trend": "UP" if pred == 1 else "DOWN",
                     "confidence": round(conf * 100, 2),
                     "history": history
-                })
+                }
         except Exception as e:
             print(f"Error predicting {t}: {e}")
+        return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_ticker = {executor.submit(process_ticker, t): t for t in trending_symbols}
+        for future in concurrent.futures.as_completed(future_to_ticker):
+            res = future.result()
+            if res:
+                results.append(res)
             
     return {"trending": results}

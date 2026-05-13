@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { TrendingUp, TrendingDown, Activity, Search, X } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Search, X, Calendar } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, YAxis, XAxis, Tooltip, CartesianGrid } from 'recharts';
 import './index.css';
 
@@ -17,6 +17,13 @@ function App() {
   const [flashStates, setFlashStates] = useState({});
   const wsRef = useRef(null);
   const searchTimeoutRef = useRef(null);
+  
+  const currentDate = new Date().toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
 
   // Modal State
   const [expandedTicker, setExpandedTicker] = useState(null);
@@ -182,9 +189,15 @@ function App() {
         </div>
       )}
 
-      <header className="header">
-        <h1 className="title"><Activity color="var(--accent)" /> AI Trend Predictor</h1>
-        <div className="search-container" style={{ position: 'relative' }}>
+      <header className="header" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div>
+          <h1 className="title"><Activity color="var(--accent)" /> AI Trend Predictor</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-muted)', marginTop: '0.5rem', fontSize: '0.875rem' }}>
+            <Calendar size={14} />
+            <span>{currentDate}</span>
+          </div>
+        </div>
+        <div className="search-container" style={{ position: 'relative', marginTop: '0.5rem' }}>
           <form onSubmit={(e) => { e.preventDefault(); handlePredictTicker(searchQuery); }} style={{ display: 'flex', gap: '0.5rem' }}>
             <input 
               type="text" 
