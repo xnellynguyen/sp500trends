@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { TrendingUp, TrendingDown, Activity, Search } from 'lucide-react';
+import { LineChart, Line, ResponsiveContainer, YAxis } from 'recharts';
 import './index.css';
 
 const API_BASE_URL = 'http://localhost:8000';
@@ -216,6 +217,24 @@ function App() {
               <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
                 AI Model Analysis indicates a {ticker.confidence}% probability of a {ticker.predicted_trend.toLowerCase()} trend.
               </p>
+              
+              {ticker.history && ticker.history.length > 0 && (
+                <div style={{ width: '100%', height: '60px', marginTop: '1rem' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={ticker.history}>
+                      <YAxis domain={['dataMin', 'dataMax']} hide />
+                      <Line 
+                        type="monotone" 
+                        dataKey="price" 
+                        stroke={ticker.predicted_trend === 'UP' ? 'var(--up-color)' : 'var(--down-color)'} 
+                        strokeWidth={2} 
+                        dot={false} 
+                        isAnimationActive={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </div>
           );
         })}

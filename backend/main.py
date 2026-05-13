@@ -58,10 +58,14 @@ def get_features_for_ticker(ticker_symbol):
         'Bollinger_High', 'Bollinger_Low'
     ]
     
-    # Return the latest row of features
+    # Return the latest row of features, latest close, and a 30-day history for the sparkline
     latest_features = df[features].iloc[[-1]]
     latest_close = df['Close'].iloc[-1]
-    return latest_features, latest_close
+    
+    history_df = df.tail(30)
+    history = [{"date": str(idx.date()), "price": round(row['Close'], 2)} for idx, row in history_df.iterrows()]
+    
+    return latest_features, latest_close, history
 
 @app.get("/")
 def read_root():
@@ -78,7 +82,7 @@ def predict_trend(ticker: str):
     if data is None:
         raise HTTPException(status_code=404, detail="Could not fetch data or calculate features for ticker.")
         
-    latest_features, latest_close = data
+    latest_features, latest_close, history = data
     
     # Predict
     prediction = model.predict(latest_features)[0]
@@ -93,7 +97,8 @@ def predict_trend(ticker: str):
         "ticker": ticker,
         "current_price": round(latest_close, 2),
         "predicted_trend": trend,
-        "confidence": round(confidence * 100, 2)
+        "confidence": round(confidence * 100, 2),
+        "history": history
     }
 
 @app.get("/api/search")
@@ -123,7 +128,7 @@ def get_trending():
         try:
             data = get_features_for_ticker(t)
             if data:
-                features, close_price = data
+                features, close_price, history = data
                 pred = model.predict(features)[0]
                 prob = model.predict_proba(features)[0]
                 conf = prob[pred]
@@ -131,7 +136,8 @@ def get_trending():
                     "ticker": t,
                     "current_price": round(close_price, 2),
                     "predicted_trend": "UP" if pred == 1 else "DOWN",
-                    "confidence": round(conf * 100, 2)
+                    "confidence": round(conf * 100, 2),
+                    "history": history
                 })
         except Exception as e:
             print(f"Error predicting {t}: {e}")
