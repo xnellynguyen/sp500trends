@@ -7,11 +7,15 @@ const API_BASE_URL = 'http://localhost:8000';
 function App() {
   const [tickers, setTickers] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [suggestions, setSuggestions] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
+  
   const [finnhubKey, setFinnhubKey] = useState(localStorage.getItem('FINNHUB_KEY') || '');
   const [keyInput, setKeyInput] = useState('');
   const [livePrices, setLivePrices] = useState({});
   const [flashStates, setFlashStates] = useState({});
   const wsRef = useRef(null);
+  const searchTimeoutRef = useRef(null);
 
   // Fetch initial predictions from our Python backend
   useEffect(() => {
@@ -85,12 +89,37 @@ function App() {
     return () => clearInterval(interval);
   }, [finnhubKey]);
 
-  const handleSearch = async (e) => {
-    e.preventDefault();
-    if (!searchQuery) return;
+  // Search logic
+  const handleSearchChange = (e) => {
+    const val = e.target.value;
+    setSearchQuery(val);
+    
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    
+    if (val.trim() === '') {
+      setSuggestions([]);
+      return;
+    }
+
+    searchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/search?q=${encodeURIComponent(val)}`);
+        const data = await res.json();
+        setSuggestions(data.results || []);
+      } catch (err) {
+        console.error("Search error", err);
+      }
+    }, 300); // 300ms debounce
+  };
+
+  const handlePredictTicker = async (tickerSymbol) => {
+    if (!tickerSymbol) return;
+    setIsSearching(true);
+    setSuggestions([]);
+    setSearchQuery('');
     
     try {
-      const res = await fetch(`${API_BASE_URL}/api/predict/${searchQuery}`);
+      const res = await fetch(`${API_BASE_URL}/api/predict/${tickerSymbol}`);
       if (!res.ok) throw new Error("Not found or model error");
       const data = await res.json();
       
@@ -104,9 +133,10 @@ function App() {
           wsRef.current.send(JSON.stringify({ 'type': 'subscribe', 'symbol': data.ticker }));
         }
       }
-      setSearchQuery('');
     } catch (err) {
-      alert(`Error fetching prediction for ${searchQuery}.`);
+      alert(`Error fetching prediction for ${tickerSymbol}.`);
+    } finally {
+      setIsSearching(false);
     }
   };
 
@@ -134,16 +164,36 @@ function App() {
 
       <header className="header">
         <h1 className="title"><Activity color="var(--accent)" /> AI Trend Predictor</h1>
-        <form className="search-container" onSubmit={handleSearch}>
-          <input 
-            type="text" 
-            className="search-input" 
-            placeholder="Search ticker (e.g. TSLA)" 
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value.toUpperCase())}
-          />
-          <button type="submit" className="btn"><Search size={18} /></button>
-        </form>
+        <div className="search-container" style={{ position: 'relative' }}>
+          <form onSubmit={(e) => { e.preventDefault(); handlePredictTicker(searchQuery); }} style={{ display: 'flex', gap: '0.5rem' }}>
+            <input 
+              type="text" 
+              className="search-input" 
+              placeholder="Search ticker or name (e.g. Apple)" 
+              value={searchQuery}
+              onChange={handleSearchChange}
+              disabled={isSearching}
+            />
+            <button type="submit" className="btn" disabled={isSearching}>
+              {isSearching ? '...' : <Search size={18} />}
+            </button>
+          </form>
+          
+          {suggestions.length > 0 && (
+            <div className="suggestions-dropdown">
+              {suggestions.map((s, idx) => (
+                <div 
+                  key={idx} 
+                  className="suggestion-item"
+                  onClick={() => handlePredictTicker(s.symbol)}
+                >
+                  <span className="suggestion-symbol">{s.symbol}</span>
+                  <span className="suggestion-name">{s.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </header>
 
       <div className="dashboard">

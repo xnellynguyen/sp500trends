@@ -5,6 +5,7 @@ import pandas as pd
 import joblib
 import os
 import ta
+import requests
 
 app = FastAPI(title="S&P 500 Trend Predictor API")
 
@@ -94,6 +95,23 @@ def predict_trend(ticker: str):
         "predicted_trend": trend,
         "confidence": round(confidence * 100, 2)
     }
+
+@app.get("/api/search")
+def search_tickers(q: str):
+    try:
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={q}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            quotes = data.get("quotes", [])
+            results = [{"symbol": quote.get("symbol"), "name": quote.get("shortname", quote.get("longname", ""))} 
+                       for quote in quotes if quote.get("quoteType") in ["EQUITY", "ETF"]]
+            return {"results": results[:5]}
+        return {"results": []}
+    except Exception as e:
+        print(f"Search error: {e}")
+        return {"results": []}
 
 @app.get("/api/trending")
 def get_trending():
