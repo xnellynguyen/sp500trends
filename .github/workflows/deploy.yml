@@ -53,6 +53,10 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         working-directory: frontend
 
+      - name: Inject Environment Variables for Vite
+        run: cp .vercel/.env.production.local .env
+        working-directory: frontend
+
       - name: Build Project Artifacts
         run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
         env:
