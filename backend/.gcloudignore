@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+.git
+.gitignore
+backtest.py
+requirements.txt
+node_modules/

@@ -3,7 +3,9 @@ import { TrendingUp, TrendingDown, Activity, Search, X, Calendar, HelpCircle, Se
 import { LineChart, Line, ResponsiveContainer, YAxis, XAxis, Tooltip, CartesianGrid } from 'recharts';
 import './index.css';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = window.location.hostname === 'localhost' 
+  ? 'http://localhost:8000' 
+  : 'https://sp500-predictor-374424962069.us-central1.run.app';
 
 function App() {
   const [tickers, setTickers] = useState([]);
