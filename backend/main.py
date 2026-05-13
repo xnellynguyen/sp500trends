@@ -139,11 +139,28 @@ def search_tickers(q: str):
 
 @app.get("/api/trending")
 def get_trending():
-    # A few hardcoded popular S&P 500 tickers for the dashboard
-    tickers = ["AAPL", "MSFT", "NVDA", "SPY"]
-    results = []
+    trending_symbols = []
+    try:
+        url = "https://query1.finance.yahoo.com/v1/finance/trending/US?count=30"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            quotes = data.get("finance", {}).get("result", [{}])[0].get("quotes", [])
+            for q in quotes:
+                sym = q.get("symbol")
+                if sym and "-" not in sym and "." not in sym and "^" not in sym:
+                    trending_symbols.append(sym)
+    except Exception as e:
+        print(f"Failed to fetch trending from Yahoo: {e}")
+        
+    if len(trending_symbols) < 4:
+        trending_symbols = ["AAPL", "MSFT", "NVDA", "SPY", "AMZN", "META", "GOOGL", "TSLA", "AMD", "NFLX", "JPM", "V"]
+        
+    trending_symbols = trending_symbols[:12]
     
-    for t in tickers:
+    results = []
+    for t in trending_symbols:
         try:
             data = get_features_for_ticker(t)
             if data:
