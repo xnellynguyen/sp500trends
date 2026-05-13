@@ -114,19 +114,36 @@ function App() {
     ws.onmessage = (event) => {
       const response = JSON.parse(event.data);
       if (response.type === 'trade') {
+        const updates = {};
+        const newFlashStates = {};
+        
         response.data.forEach(trade => {
-          const symbol = trade.s;
-          const price = trade.p;
-          
-          setLivePrices(prev => {
-            const oldPrice = prev[symbol];
-            if (oldPrice && price !== oldPrice) {
-              setFlashStates(f => ({ ...f, [symbol]: price > oldPrice ? 'up' : 'down' }));
-              setTimeout(() => setFlashStates(f => ({ ...f, [symbol]: null })), 500);
-            }
-            return { ...prev, [symbol]: price };
-          });
+          updates[trade.s] = trade.p;
         });
+
+        setLivePrices(prev => {
+          const nextPrices = { ...prev };
+          Object.keys(updates).forEach(sym => {
+            const price = updates[sym];
+            const oldPrice = prev[sym];
+            if (oldPrice && price !== oldPrice) {
+              newFlashStates[sym] = price > oldPrice ? 'up' : 'down';
+            }
+            nextPrices[sym] = price;
+          });
+          return nextPrices;
+        });
+
+        if (Object.keys(newFlashStates).length > 0) {
+          setFlashStates(f => ({ ...f, ...newFlashStates }));
+          setTimeout(() => {
+            setFlashStates(f => {
+              const reset = { ...f };
+              Object.keys(newFlashStates).forEach(sym => { reset[sym] = null; });
+              return reset;
+            });
+          }, 500);
+        }
       }
     };
 
@@ -141,16 +158,26 @@ function App() {
   useEffect(() => {
     if (finnhubKey) return;
     const interval = setInterval(() => {
+      const newFlashStates = {};
+      
       setLivePrices(prev => {
         const newPrices = { ...prev };
         Object.keys(newPrices).forEach(sym => {
           const change = (Math.random() - 0.5) * 0.5;
           newPrices[sym] = newPrices[sym] + change;
-          setFlashStates(f => ({ ...f, [sym]: change > 0 ? 'up' : 'down' }));
-          setTimeout(() => setFlashStates(f => ({ ...f, [sym]: null })), 500);
+          newFlashStates[sym] = change > 0 ? 'up' : 'down';
         });
         return newPrices;
       });
+
+      setFlashStates(f => ({ ...f, ...newFlashStates }));
+      setTimeout(() => {
+        setFlashStates(f => {
+          const reset = { ...f };
+          Object.keys(newFlashStates).forEach(sym => { reset[sym] = null; });
+          return reset;
+        });
+      }, 500);
     }, 2000);
     return () => clearInterval(interval);
   }, [finnhubKey]);
@@ -362,7 +389,7 @@ function App() {
               {ticker.history && ticker.history.length > 0 && (
                 <div style={{ width: '100%', height: '220px', marginTop: '1.5rem' }} onClick={e => e.stopPropagation()}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={ticker.history} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
+                    <LineChart data={[...ticker.history, { date: new Date().toISOString(), price: price }]} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
                       <XAxis 
                         dataKey="date" 
