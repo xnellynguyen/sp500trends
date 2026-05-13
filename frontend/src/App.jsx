@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { TrendingUp, TrendingDown, Activity, Search, X, Calendar, HelpCircle, Settings, LogOut, AlertTriangle, Trash2, Filter } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Search, X, Calendar, HelpCircle, Settings, LogOut, AlertTriangle, Trash2, Filter, Plus } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, YAxis, XAxis, Tooltip, CartesianGrid } from 'recharts';
 import { supabase } from './supabaseClient';
 import './index.css';
@@ -13,15 +13,20 @@ function App() {
   const [suggestions, setSuggestions] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   
-  const [finnhubKey, setFinnhubKey] = useState(() => {
-    const local = localStorage.getItem('FINNHUB_KEY');
-    return (local && local.trim() !== '') ? local : (import.meta.env.VITE_FINNHUB_KEY || '');
-  });
-  const [keyInput, setKeyInput] = useState('');
+  const [finnhubKey] = useState(() => import.meta.env.VITE_FINNHUB_KEY || '');
+  
   const [livePrices, setLivePrices] = useState({});
   const [flashStates, setFlashStates] = useState({});
   const wsRef = useRef(null);
   const searchTimeoutRef = useRef(null);
+  
+  const laymanExplanations = {
+    rsi: { name: "Momentum (RSI)", desc: "Measures if the stock is overbought or oversold. High values mean it might pull back, low means it might bounce." },
+    macd: { name: "Trend Strength (MACD)", desc: "Shows if the recent price trend is accelerating or slowing down." },
+    sma20: { name: "Short-Term Trend (SMA)", desc: "Compares current price to the 20-day average to see if the immediate trend is up or down." },
+    bollinger: { name: "Volatility (Bollinger)", desc: "Checks if the price is unusually high or low compared to its normal trading range." },
+    vix: { name: "Market Fear (VIX)", desc: "Measures overall stock market anxiety. High fear often drags down individual stocks." }
+  };
   
   const currentDate = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
@@ -34,6 +39,8 @@ function App() {
   const [expandedTicker, setExpandedTicker] = useState(null);
   const [intradayData, setIntradayData] = useState([]);
   const [isLoadingIntraday, setIsLoadingIntraday] = useState(false);
+  const [earningsData, setEarningsData] = useState(null);
+  const [isLoadingEarnings, setIsLoadingEarnings] = useState(false);
 
   // Model parameters
   const [horizon, setHorizon] = useState('1d');
@@ -45,6 +52,7 @@ function App() {
   const [trendingTickers, setTrendingTickers] = useState([]);
   const [isFetchingTrending, setIsFetchingTrending] = useState(false);
   const [showTrending, setShowTrending] = useState(false);
+  const [expandedCards, setExpandedCards] = useState({});
   
   const isInitialMount = useRef(true);
   const tickersRef = useRef([]);
@@ -91,6 +99,25 @@ function App() {
       });
     } catch (e) {
       console.error("Log error", e);
+    }
+  };
+
+  const handleAddTrending = async (tickerSymbol, e) => {
+    if (e) e.stopPropagation();
+    try {
+      const { error } = await supabase.from('watchlist').insert({
+        user_id: session.user.id,
+        ticker: tickerSymbol,
+      });
+      if (error) {
+        if (error.code !== '23505') throw error;
+      }
+      // Remove from trending locally
+      setTrendingTickers(prev => prev.filter(t => t.ticker !== tickerSymbol));
+      // Reload watchlist
+      loadWatchlist();
+    } catch (err) {
+      console.error("Failed to add trending ticker", err);
     }
   };
 
@@ -147,43 +174,61 @@ function App() {
       
       const symbols = data.map(d => d.ticker);
       
-      const [res1d, res5d] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/predict_batch`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tickers: symbols, horizon: '1d', macro: useMacro ? "true" : "false" })
-        }).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/predict_batch`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tickers: symbols, horizon: '5d', macro: useMacro ? "true" : "false" })
-        }).then(r => r.json())
-      ]);
+      // Fast path: fetch only the active horizon
+      const resMain = await fetch(`${API_BASE_URL}/api/predict_batch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tickers: symbols, horizon: horizon, macro: useMacro ? "true" : "false" })
+      }).then(r => r.json());
       
       const initialPrices = { ...livePrices };
       
-      const merged = (res1d.results || []).map(t1d => {
-        const t5d = (res5d.results || []).find(t => t.ticker === t1d.ticker);
-        const hasDivergence = t5d && t1d.predicted_trend !== t5d.predicted_trend;
-        
-        logPrediction(t1d.ticker, '1d', t1d.predicted_trend, t1d.confidence, t1d.current_price);
-        if (t5d) logPrediction(t5d.ticker, '5d', t5d.predicted_trend, t5d.confidence, t5d.current_price);
-        
-        if (!initialPrices[t1d.ticker]) {
-          initialPrices[t1d.ticker] = t1d.current_price;
+      const baseTickers = (resMain.results || []).map(t => {
+        logPrediction(t.ticker, horizon, t.predicted_trend, t.confidence, t.current_price);
+        if (!initialPrices[t.ticker]) {
+          initialPrices[t.ticker] = t.current_price;
         }
 
-        const mainData = horizon === '1d' ? t1d : (t5d || t1d);
-        
+        const dbItem = data.find(d => d.ticker === t.ticker) || {};
+
         return {
-          ...mainData,
-          trend_1d: t1d.predicted_trend,
-          trend_5d: t5d ? t5d.predicted_trend : null,
-          hasDivergence,
-          // Track 30d history? The DB does this.
+          ...t,
+          entry_price: dbItem.entry_price,
+          entry_date: dbItem.entry_date,
+          trend_1d: horizon === '1d' ? t.predicted_trend : null,
+          trend_5d: horizon === '5d' ? t.predicted_trend : null,
+          hasDivergence: false,
         };
       });
       
-      setTickers(merged);
+      setTickers(baseTickers);
       setLivePrices(initialPrices);
+      setIsFetchingDashboard(false); // UI renders immediately!
+
+      // Slow path: fetch the other horizon in the background for divergence detection
+      const otherHorizon = horizon === '1d' ? '5d' : '1d';
+      fetch(`${API_BASE_URL}/api/predict_batch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tickers: symbols, horizon: otherHorizon, macro: useMacro ? "true" : "false" })
+      })
+      .then(r => r.json())
+      .then(resOther => {
+        setTickers(currentTickers => {
+          return currentTickers.map(t => {
+            const otherT = (resOther.results || []).find(o => o.ticker === t.ticker);
+            if (!otherT) return t;
+            
+            logPrediction(otherT.ticker, otherHorizon, otherT.predicted_trend, otherT.confidence, otherT.current_price);
+            
+            return {
+              ...t,
+              trend_1d: horizon === '1d' ? t.trend_1d : otherT.predicted_trend,
+              trend_5d: horizon === '5d' ? t.trend_5d : otherT.predicted_trend,
+              hasDivergence: t.predicted_trend !== otherT.predicted_trend
+            };
+          });
+        });
+      })
+      .catch(err => console.error("Divergence fetch failed", err));
 
       if (wsRef.current && wsRef.current.readyState === 1) {
         symbols.forEach(sym => {
@@ -192,7 +237,6 @@ function App() {
       }
     } catch (err) {
       console.error("Failed to load watchlist.", err);
-    } finally {
       setIsFetchingDashboard(false);
     }
   };
@@ -212,8 +256,35 @@ function App() {
     try {
       await supabase.from('watchlist').delete().eq('user_id', session.user.id).eq('ticker', symbol);
       setTickers(tickers.filter(t => t.ticker !== symbol));
+      if (expandedTicker && expandedTicker.ticker === symbol) {
+        setExpandedTicker(null);
+      }
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const savePosition = async (symbol, priceStr, dateStr) => {
+    const price = priceStr ? parseFloat(priceStr) : null;
+    const date = dateStr ? dateStr : null;
+    
+    try {
+      await supabase.from('watchlist').update({ entry_price: price, entry_date: date })
+        .eq('user_id', session.user.id)
+        .eq('ticker', symbol);
+        
+      setTickers(prev => prev.map(t => {
+        if (t.ticker === symbol) {
+          return { ...t, entry_price: price, entry_date: date };
+        }
+        return t;
+      }));
+      
+      if (expandedTicker && expandedTicker.ticker === symbol) {
+        setExpandedTicker(prev => ({ ...prev, entry_price: price, entry_date: date }));
+      }
+    } catch (err) {
+      console.error("Failed to save position", err);
     }
   };
 
@@ -379,13 +450,24 @@ function App() {
     setIsSearching(false);
   };
 
-  const handleCardClick = async (ticker) => {
+  const openDetailsModal = async (ticker, e) => {
+    if (e) e.stopPropagation();
     setExpandedTicker(ticker);
     setIsLoadingIntraday(true);
     setIntradayData([]);
+    setEarningsData(null);
+    
+    if (true) {
+      setIsLoadingEarnings(true);
+      fetch(`${API_BASE_URL}/api/earnings/${ticker.ticker || ticker.symbol}`)
+        .then(r => r.json())
+        .then(d => setEarningsData(d))
+        .catch(err => console.error("Earnings fetch err", err))
+        .finally(() => setIsLoadingEarnings(false));
+    }
     
     try {
-      const res = await fetch(`${API_BASE_URL}/api/intraday/${ticker.ticker}`);
+      const res = await fetch(`${API_BASE_URL}/api/intraday/${ticker.ticker || ticker.symbol}`);
       const data = await res.json();
       setIntradayData(data.history || []);
     } catch (err) {
@@ -393,11 +475,6 @@ function App() {
     } finally {
       setIsLoadingIntraday(false);
     }
-  };
-
-  const saveApiKey = () => {
-    localStorage.setItem('FINNHUB_KEY', keyInput);
-    setFinnhubKey(keyInput);
   };
 
   const signInWithGoogle = async () => {
@@ -443,21 +520,6 @@ function App() {
 
   return (
     <div className="container">
-      {!finnhubKey && (
-        <div className="config-banner">
-          <strong>Running in Demo Mode:</strong> You are seeing mocked live prices. 
-          To see real trades, get a free API key from Finnhub.io and enter it here:
-          <input 
-            type="text" 
-            placeholder="Finnhub API Key" 
-            value={keyInput}
-            onChange={(e) => setKeyInput(e.target.value)}
-            style={{ margin: '0 10px', padding: '5px' }}
-          />
-          <button onClick={saveApiKey} className="btn" style={{ padding: '5px 10px' }}>Save</button>
-        </div>
-      )}
-
       <header className="header" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <div>
           <h1 className="title"><Activity color="var(--accent)" /> AI Trend Predictor</h1>
@@ -613,8 +675,20 @@ function App() {
           const price = livePrices[ticker.ticker] || ticker.current_price;
           const flash = flashStates[ticker.ticker];
           
+          let pnlElement = null;
+          if (ticker.entry_price && price) {
+            const diff = price - ticker.entry_price;
+            const pct = (diff / ticker.entry_price) * 100;
+            const isProfit = diff >= 0;
+            pnlElement = (
+              <div style={{ fontSize: '0.875rem', color: isProfit ? 'var(--up-color)' : 'var(--down-color)', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                {isProfit ? '+' : ''}{diff.toFixed(2)} ({isProfit ? '+' : ''}{pct.toFixed(2)}%)
+              </div>
+            );
+          }
+          
           return (
-            <div key={ticker.ticker} className={`card ${ticker.hasDivergence ? 'card-divergence' : ''}`} onClick={() => handleCardClick(ticker)} style={{ cursor: 'pointer' }}>
+            <div key={ticker.ticker} className={`card ${ticker.hasDivergence ? 'card-divergence' : ''}`} onClick={(e) => openDetailsModal(ticker, e)} style={{ cursor: 'pointer' }}>
               {ticker.hasDivergence && (
                 <div className="divergence-tag">
                   <AlertTriangle size={14} /> Divergence Alert
@@ -642,65 +716,7 @@ function App() {
               <div className={`live-price ${flash === 'up' ? 'flash-up' : flash === 'down' ? 'flash-down' : ''}`} style={{ marginTop: ticker.hasDivergence ? '0.5rem' : '0' }}>
                 ${price.toFixed(2)}
               </div>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
-                AI Model Analysis indicates a {ticker.confidence}% probability of a {ticker.predicted_trend.toLowerCase()} trend.
-              </p>
-              
-              {/* Win Rate history logic */}
-              <div className="win-rate-container">
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '0.25rem' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Model Trust Score</span>
-                  <span style={{ color: 'var(--text-muted)' }}>
-                    {winRates[ticker.ticker] ? `${winRates[ticker.ticker].rate}% (${winRates[ticker.ticker].total} records)` : 'Building history...'}
-                  </span>
-                </div>
-                <div className="progress-bg">
-                  <div className="progress-bar" style={{ width: winRates[ticker.ticker] ? `${winRates[ticker.ticker].rate}%` : '0%', background: winRates[ticker.ticker] ? (winRates[ticker.ticker].rate > 50 ? 'var(--up-color)' : 'var(--down-color)') : 'var(--text-muted)' }}></div>
-                </div>
-              </div>
-
-              {ticker.history && ticker.history.length > 0 && (
-                <div style={{ width: '100%', height: '220px', marginTop: '1.5rem' }} onClick={e => e.stopPropagation()}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={[...ticker.history, { date: new Date().toISOString(), price: price }]} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
-                      <XAxis 
-                        dataKey="date" 
-                        stroke="var(--text-muted)" 
-                        fontSize={12}
-                        tickMargin={10}
-                        tickFormatter={(str) => {
-                          const date = new Date(str);
-                          return `${date.getMonth()+1}/${date.getDate()}`;
-                        }}
-                      />
-                      <YAxis 
-                        domain={['auto', 'auto']} 
-                        stroke="var(--text-muted)" 
-                        fontSize={12}
-                        tickFormatter={(val) => `$${val}`}
-                        width={60}
-                      />
-                      <Tooltip 
-                        contentStyle={{ backgroundColor: 'var(--bg-color)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-main)' }}
-                        itemStyle={{ color: 'var(--text-main)', fontWeight: 'bold' }}
-                        labelStyle={{ color: 'var(--text-muted)', marginBottom: '5px' }}
-                        formatter={(value) => [`$${value.toFixed(2)}`, 'Close Price']}
-                        labelFormatter={(label) => `Date: ${label}`}
-                      />
-                      <Line 
-                        type="monotone" 
-                        dataKey="price" 
-                        stroke={ticker.predicted_trend === 'UP' ? 'var(--up-color)' : 'var(--down-color)'} 
-                        strokeWidth={2} 
-                        dot={false}
-                        activeDot={{ r: 6, fill: 'var(--text-main)' }} 
-                        isAnimationActive={false}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
+              {pnlElement}
             </div>
           );
         })}
@@ -736,37 +752,32 @@ function App() {
                 <p style={{ color: 'var(--text-muted)' }}>Scraping Yahoo Finance...</p>
               </div>
             ) : (
-              trendingTickers.map(ticker => {
-                const price = livePrices[ticker.ticker] || ticker.current_price;
-                const flash = flashStates[ticker.ticker];
-                const inWatchlist = tickers.some(t => t.ticker === ticker.ticker);
-                
-                return (
-                  <div key={`trend-${ticker.ticker}`} className="card" onClick={() => handleCardClick(ticker)} style={{ cursor: 'pointer' }}>
+              <div className="dashboard">
+                {trendingTickers.map((t) => (
+                  <div key={t.ticker} className="card" style={{ cursor: 'pointer', position: 'relative' }} onClick={() => openDetailsModal(t)}>
                     <div className="card-header">
-                      <span className="ticker-name">{ticker.ticker}</span>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <div className={`prediction-badge ${ticker.predicted_trend === 'UP' ? 'prediction-up' : 'prediction-down'}`}>
-                          {ticker.predicted_trend === 'UP' ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-                          <span>{ticker.predicted_trend} ({ticker.confidence}%)</span>
-                        </div>
-                        <button 
-                          className="btn" 
-                          onClick={(e) => { e.stopPropagation(); addTicker(ticker.ticker); }} 
-                          disabled={inWatchlist}
-                          style={{ padding: '4px 8px', fontSize: '0.75rem', opacity: inWatchlist ? 0.5 : 1 }}
-                        >
-                          {inWatchlist ? 'Added' : 'Add'}
-                        </button>
+                      <span className="ticker-name">{t.ticker}</span>
+                      <div className={`prediction-badge ${t.predicted_trend === 'UP' ? 'prediction-up' : 'prediction-down'}`}>
+                        {t.predicted_trend === 'UP' ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
+                        <span>{t.predicted_trend} ({t.confidence}%)</span>
                       </div>
                     </div>
-                    
-                    <div className={`live-price ${flash === 'up' ? 'flash-up' : flash === 'down' ? 'flash-down' : ''}`}>
-                      ${price.toFixed(2)}
+                    <div className="divergence-subtitle" style={{ marginBottom: '0.5rem' }}>
+                      {horizon} Prediction
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: '0.5rem' }}>
+                      <span className="live-price">${(livePrices[t.ticker] || t.current_price).toFixed(2)}</span>
+                      <button 
+                        className="btn" 
+                        onClick={(e) => handleAddTrending(t.ticker, e)}
+                        style={{ padding: '4px 8px', fontSize: '0.875rem' }}
+                      >
+                        <Plus size={16} style={{ marginRight: '4px' }}/> Add
+                      </button>
                     </div>
                   </div>
-                );
-              })
+                ))}
+              </div>
             )}
           </div>
         )}
@@ -774,63 +785,198 @@ function App() {
 
       {expandedTicker && (
         <div className="modal-overlay" onClick={() => setExpandedTicker(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '700px' }}>
             <button className="modal-close" onClick={() => setExpandedTicker(null)}>
               <X size={24} />
             </button>
             <div style={{ marginBottom: '2rem' }}>
-              <h2 style={{ fontSize: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                {expandedTicker.ticker} Intraday Movement
+              <h2 style={{ fontSize: '1.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-main)' }}>
+                {expandedTicker.ticker} Overview
               </h2>
-              <p style={{ color: 'var(--text-muted)' }}>1-Day Chart (5-minute intervals)</p>
-            </div>
-            
-            <div style={{ width: '100%', height: '400px' }}>
-              {isLoadingIntraday ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
-                  Loading intraday data...
+              <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+                <div className={`prediction-badge ${expandedTicker.predicted_trend === 'UP' ? 'prediction-up' : 'prediction-down'}`} style={{ fontSize: '1rem', padding: '6px 12px' }}>
+                  {expandedTicker.predicted_trend === 'UP' ? <TrendingUp size={18} /> : <TrendingDown size={18} />}
+                  <span>{expandedTicker.predicted_trend} ({expandedTicker.confidence}%)</span>
                 </div>
-              ) : intradayData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={intradayData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
-                    <XAxis 
-                      dataKey="time" 
-                      stroke="var(--text-muted)" 
-                      fontSize={12}
-                      tickMargin={10}
-                      minTickGap={30}
-                    />
-                    <YAxis 
-                      domain={['auto', 'auto']} 
-                      stroke="var(--text-muted)" 
-                      fontSize={12}
-                      tickFormatter={(val) => `$${val}`}
-                      width={60}
-                    />
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: 'var(--bg-color)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-main)' }}
-                      itemStyle={{ color: 'var(--text-main)', fontWeight: 'bold' }}
-                      labelStyle={{ color: 'var(--text-muted)', marginBottom: '5px' }}
-                      formatter={(value) => [`$${value.toFixed(2)}`, 'Price']}
-                      labelFormatter={(label) => `Time: ${label}`}
-                    />
-                    <Line 
-                      type="monotone" 
-                      dataKey="price" 
-                      stroke="var(--accent)"
-                      strokeWidth={2} 
-                      dot={false}
-                      activeDot={{ r: 6, fill: 'var(--accent)' }} 
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
-                  No intraday data available today.
+                <div style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', padding: '6px 12px', background: 'var(--bg-color)', borderRadius: '20px', border: '1px solid var(--border-color)' }}>
+                  Active Horizon: {horizon}
                 </div>
-              )}
+              </div>
             </div>
+
+            {/* Portfolio Position Tracking */}
+            <div style={{ marginBottom: '2rem', padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+                <div>
+                  <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>My Position</h3>
+                  {expandedTicker.entry_price ? (
+                    <div>
+                      <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                        <div>
+                          <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Avg Cost</p>
+                          <p style={{ fontSize: '1.125rem', fontWeight: 'bold' }}>${expandedTicker.entry_price.toFixed(2)}</p>
+                        </div>
+                        {expandedTicker.entry_date && (
+                          <div>
+                            <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Date</p>
+                            <p style={{ fontSize: '0.875rem' }}>{new Date(expandedTicker.entry_date).toLocaleDateString()}</p>
+                          </div>
+                        )}
+                        {livePrices[expandedTicker.ticker] && (
+                          <div>
+                            <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>P&L</p>
+                            <p style={{ fontSize: '1.125rem', fontWeight: 'bold', color: livePrices[expandedTicker.ticker] >= expandedTicker.entry_price ? 'var(--up-color)' : 'var(--down-color)' }}>
+                              {(livePrices[expandedTicker.ticker] - expandedTicker.entry_price) >= 0 ? '+' : ''}
+                              ${(livePrices[expandedTicker.ticker] - expandedTicker.entry_price).toFixed(2)} 
+                              <span style={{ fontSize: '0.875rem', marginLeft: '0.25rem' }}>
+                                ({( ((livePrices[expandedTicker.ticker] - expandedTicker.entry_price) / expandedTicker.entry_price) * 100 ).toFixed(2)}%)
+                              </span>
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Not tracking a position. Enter your buy details to see P&L.</p>
+                  )}
+                </div>
+                
+                <form 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    savePosition(expandedTicker.ticker, e.target.elements.price.value, e.target.elements.date.value);
+                  }}
+                  style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', background: 'var(--card-bg)', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}
+                >
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Buy Price ($)</label>
+                    <input name="price" type="number" step="0.01" defaultValue={expandedTicker.entry_price || ''} className="search-input" style={{ width: '100px', padding: '0.375rem 0.5rem', background: 'var(--bg-color)' }} placeholder="0.00" />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Date</label>
+                    <input name="date" type="date" defaultValue={expandedTicker.entry_date || ''} className="search-input" style={{ width: '140px', padding: '0.375rem 0.5rem', background: 'var(--bg-color)' }} />
+                  </div>
+                  <button type="submit" className="btn" style={{ padding: '0.375rem 0.75rem', height: 'max-content' }}>Save</button>
+                  {expandedTicker.entry_price && (
+                    <button type="button" onClick={() => savePosition(expandedTicker.ticker, null, null)} className="btn" style={{ padding: '0.375rem 0.75rem', height: 'max-content', background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>Clear</button>
+                  )}
+                </form>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
+              <div style={{ padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>AI Model Trust Score</h3>
+                <div className="win-rate-container" style={{ marginTop: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem', marginBottom: '0.5rem' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Historical Accuracy</span>
+                    <span style={{ color: 'var(--text-main)', fontWeight: 'bold' }}>
+                      {winRates[expandedTicker.ticker] ? `${winRates[expandedTicker.ticker].rate}% (${winRates[expandedTicker.ticker].total} records)` : 'Building history...'}
+                    </span>
+                  </div>
+                  <div className="progress-bg" style={{ height: '8px' }}>
+                    <div className="progress-bar" style={{ width: winRates[expandedTicker.ticker] ? `${winRates[expandedTicker.ticker].rate}%` : '0%', background: winRates[expandedTicker.ticker] ? (winRates[expandedTicker.ticker].rate > 50 ? 'var(--up-color)' : 'var(--down-color)') : 'var(--text-muted)' }}></div>
+                  </div>
+                </div>
+              </div>
+              
+              <div style={{ padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>Earnings Intelligence</h3>
+                {isLoadingEarnings ? (
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading earnings data...</p>
+                ) : earningsData && !earningsData.error ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Next Earnings:</span>
+                      <span style={{ color: earningsData.is_warning ? 'var(--down-color)' : 'var(--text-main)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        {earningsData.is_warning && <AlertTriangle size={14} />}
+                        {earningsData.next_earnings_date} ({earningsData.days_until} days)
+                      </span>
+                    </div>
+                    {earningsData.analyst && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Analyst Consensus:</span>
+                        <span style={{ color: earningsData.analyst.consensus === 'BUY' ? 'var(--up-color)' : 'var(--text-main)', fontWeight: 'bold' }}>
+                          {earningsData.analyst.consensus} ({earningsData.analyst.buy_count}/{earningsData.analyst.total_count} Buy)
+                        </span>
+                      </div>
+                    )}
+                    {earningsData.historical_beats && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Earnings Beat Rate:</span>
+                        <span style={{ color: 'var(--text-main)', fontWeight: 'bold' }}>
+                          {Math.round(earningsData.historical_beats.beat_rate * 100)}% (Last {earningsData.historical_beats.quarters_checked} Qs)
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Failed to load earnings data.</p>
+                )}
+              </div>
+            </div>
+
+            {expandedTicker.signals && (
+              <div style={{ marginBottom: '2rem', padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>Signal Confluence Breakdown</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {Object.keys(expandedTicker.signals).map(key => {
+                    const sig = expandedTicker.signals[key];
+                    const info = laymanExplanations[key] || { name: key, desc: "" };
+                    return (
+                      <div key={key} style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
+                        <div className={`prediction-badge ${sig.direction === 'UP' ? 'prediction-up' : sig.direction === 'DOWN' ? 'prediction-down' : ''}`} style={{ padding: '4px 8px', minWidth: '70px', justifyContent: 'center' }}>
+                          {sig.direction === 'UP' ? <TrendingUp size={14} /> : sig.direction === 'DOWN' ? <TrendingDown size={14} /> : '-'} {sig.direction}
+                        </div>
+                        <div>
+                          <p style={{ fontSize: '0.875rem', fontWeight: 'bold', color: 'var(--text-main)', marginBottom: '0.25rem' }}>{info.name} <span style={{ color: 'var(--text-muted)', fontWeight: 'normal', fontSize: '0.75rem', marginLeft: '0.5rem' }}>Value: {sig.value}</span></p>
+                          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{info.desc}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', height: '300px' }}>
+              <div style={{ flex: '1 1 300px', height: '100%' }}>
+                <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>30-Day History</h3>
+                {expandedTicker.history && expandedTicker.history.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="90%">
+                    <LineChart data={[...expandedTicker.history, { date: new Date().toISOString(), price: livePrices[expandedTicker.ticker] || expandedTicker.current_price }]} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+                      <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={12} tickFormatter={(str) => { const date = new Date(str); return `${date.getMonth()+1}/${date.getDate()}`; }} />
+                      <YAxis domain={['auto', 'auto']} stroke="var(--text-muted)" fontSize={12} tickFormatter={(val) => `$${val}`} width={60} />
+                      <Tooltip contentStyle={{ backgroundColor: 'var(--bg-color)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-main)' }} />
+                      <Line type="monotone" dataKey="price" stroke={expandedTicker.predicted_trend === 'UP' ? 'var(--up-color)' : 'var(--down-color)'} strokeWidth={2} dot={false} activeDot={{ r: 6, fill: 'var(--text-main)' }} isAnimationActive={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '90%', color: 'var(--text-muted)' }}>No historical data available</div>
+                )}
+              </div>
+
+              <div style={{ flex: '1 1 300px', height: '100%' }}>
+                <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>Intraday (5-min)</h3>
+                {isLoadingIntraday ? (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '90%', color: 'var(--text-muted)' }}>Loading intraday data...</div>
+                ) : intradayData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="90%">
+                    <LineChart data={intradayData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+                      <XAxis dataKey="time" stroke="var(--text-muted)" fontSize={12} />
+                      <YAxis domain={['auto', 'auto']} stroke="var(--text-muted)" fontSize={12} tickFormatter={(val) => `$${val}`} width={60} />
+                      <Tooltip contentStyle={{ backgroundColor: 'var(--bg-color)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-main)' }} />
+                      <Line type="stepAfter" dataKey="price" stroke="var(--accent)" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '90%', color: 'var(--text-muted)' }}>No intraday data available</div>
+                )}
+              </div>
+            </div>
+
           </div>
         </div>
       )}
