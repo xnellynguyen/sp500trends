@@ -56,7 +56,9 @@ function App() {
   const [isFetchingTrending, setIsFetchingTrending] = useState(false);
   const [showTrending, setShowTrending] = useState(false);
   const [expandedCards, setExpandedCards] = useState({});
-  const [notificationsEnabled, setNotificationsEnabled] = useState(Notification.permission === 'granted');
+  const [notificationsEnabled, setNotificationsEnabled] = useState(
+    typeof Notification !== 'undefined' && Notification.permission === 'granted'
+  );
   
   const isInitialMount = useRef(true);
   const tickersRef = useRef([]);
@@ -98,6 +100,10 @@ function App() {
   }, []);
 
   const requestNotificationPermission = async () => {
+    if (typeof Notification === 'undefined') {
+      alert("Notifications are not supported in this environment.");
+      return;
+    }
     const permission = await Notification.requestPermission();
     if (permission === 'granted') {
       setNotificationsEnabled(true);
