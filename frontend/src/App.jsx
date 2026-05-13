@@ -13,7 +13,7 @@ function App() {
   const [suggestions, setSuggestions] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   
-  const [finnhubKey, setFinnhubKey] = useState(localStorage.getItem('FINNHUB_KEY') || '');
+  const [finnhubKey, setFinnhubKey] = useState(localStorage.getItem('FINNHUB_KEY') || import.meta.env.VITE_FINNHUB_KEY || '');
   const [keyInput, setKeyInput] = useState('');
   const [livePrices, setLivePrices] = useState({});
   const [flashStates, setFlashStates] = useState({});
@@ -327,6 +327,15 @@ function App() {
       </div>
 
       <div className="dashboard">
+        {tickers.length === 0 && (
+          <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '4rem 1rem' }}>
+            <Activity size={48} color="var(--accent)" style={{ marginBottom: '1rem', animation: 'pulse 2s infinite' }} />
+            <h2 style={{ color: 'var(--text-main)', marginBottom: '0.5rem' }}>Loading Predictions...</h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
+              {isFetchingDashboard ? 'Waking up the server & downloading live market data. This may take up to a minute on first load.' : 'No data available. Check your connection.'}
+            </p>
+          </div>
+        )}
         {tickers.map(ticker => {
           const price = livePrices[ticker.ticker] || ticker.current_price;
           const flash = flashStates[ticker.ticker];
