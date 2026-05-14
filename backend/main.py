@@ -10,6 +10,7 @@ import ta
 import requests
 import concurrent.futures
 from dotenv import load_dotenv
+from datetime import datetime, date
 
 load_dotenv()
 
@@ -260,8 +261,15 @@ def get_earnings_info(ticker: str):
         calendar = stock.calendar
         if calendar and 'Earnings Date' in calendar and len(calendar['Earnings Date']) > 0:
             e_date = calendar['Earnings Date'][0]
-            next_date = e_date.strftime("%Y-%m-%d")
-            days_until = (e_date - datetime.now().date()).days
+            
+            # Safely handle if it's a Timestamp or a raw date object
+            if hasattr(e_date, 'date'):
+                e_date_val = e_date.date()
+            else:
+                e_date_val = e_date
+                
+            next_date = e_date_val.strftime("%Y-%m-%d")
+            days_until = (e_date_val - date.today()).days
             is_warning = days_until <= 5
                 
         # 2. Analyst Consensus
