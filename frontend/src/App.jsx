@@ -12,14 +12,14 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
-  
+
   const [finnhubKey] = useState(() => import.meta.env.VITE_FINNHUB_KEY || '');
-  
+
   const [livePrices, setLivePrices] = useState({});
   const [flashStates, setFlashStates] = useState({});
   const wsRef = useRef(null);
   const searchTimeoutRef = useRef(null);
-  
+
   const laymanExplanations = {
     rsi: { name: "Momentum (RSI)", desc: "Measures if the stock is overbought or oversold. High values mean it might pull back, low means it might bounce." },
     macd: { name: "Trend Strength (MACD)", desc: "Shows if the recent price trend is accelerating or slowing down." },
@@ -27,7 +27,7 @@ function App() {
     bollinger: { name: "Volatility (Bollinger)", desc: "Checks if the price is unusually high or low compared to its normal trading range." },
     vix: { name: "Market Fear (VIX)", desc: "Measures overall stock market anxiety. High fear often drags down individual stocks." }
   };
-  
+
   const currentDate = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     year: 'numeric',
@@ -47,7 +47,7 @@ function App() {
   const [horizon, setHorizon] = useState('1d');
   const [useMacro, setUseMacro] = useState(false);
   const [isFetchingDashboard, setIsFetchingDashboard] = useState(false);
-  const [minConfidence, setMinConfidence] = useState(0); 
+  const [minConfidence, setMinConfidence] = useState(0);
   const [earningsMap, setEarningsMap] = useState({});
   const [isFetchingEarningsBatch, setIsFetchingEarningsBatch] = useState(false);
   const [sortOption, setSortOption] = useState('confidence'); // 'confidence', 'alphabetical', 'divergence'
@@ -67,7 +67,7 @@ function App() {
       console.warn("Notification API not fully supported or accessible:", e);
     }
   }, []);
-  
+
   const isInitialMount = useRef(true);
   const tickersRef = useRef([]);
 
@@ -164,14 +164,14 @@ function App() {
         .not('resolved_correctly', 'is', null);
 
       if (error) throw error;
-      
+
       const rates = {};
       data.forEach(p => {
         if (!rates[p.ticker]) rates[p.ticker] = { total: 0, wins: 0 };
         rates[p.ticker].total += 1;
         if (p.resolved_correctly) rates[p.ticker].wins += 1;
       });
-      
+
       const formatted = {};
       Object.keys(rates).forEach(t => {
         formatted[t] = {
@@ -179,7 +179,7 @@ function App() {
           total: rates[t].total
         };
       });
-      
+
       setWinRates(formatted);
     } catch (e) {
       console.error("Failed to load win rates", e);
@@ -189,7 +189,7 @@ function App() {
   const fetchEarningsForBatch = async (symbols) => {
     setIsFetchingEarningsBatch(true);
     const newEarnings = { ...earningsMap };
-    
+
     // Fetch in parallel with a small delay to avoid hitting rate limits too fast
     // though FMP is usually okay with some concurrency
     const promises = symbols.map(async (symbol) => {
@@ -217,27 +217,27 @@ function App() {
         .select('*')
         .eq('user_id', session.user.id)
         .order('added_at', { ascending: true });
-        
+
       if (error) throw error;
-      
+
       if (data.length === 0) {
         setTickers([]);
         setIsFetchingDashboard(false);
         return;
       }
-      
+
       loadWinRates();
-      
+
       const symbols = data.map(d => d.ticker);
-      
+
       // Fast path: fetch only the active horizon
       const resMain = await fetch(`${API_BASE_URL}/api/predict_batch`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tickers: symbols, horizon: horizon, macro: useMacro ? "true" : "false" })
       }).then(r => r.json());
-      
+
       const initialPrices = { ...livePrices };
-      
+
       const baseTickers = (resMain.results || []).map(t => {
         logPrediction(t.ticker, horizon, t.predicted_trend, t.confidence, t.current_price);
         if (!initialPrices[t.ticker]) {
@@ -255,11 +255,11 @@ function App() {
           hasDivergence: false,
         };
       });
-      
+
       setTickers(baseTickers);
       setLivePrices(initialPrices);
-      setIsFetchingDashboard(false); 
-      
+      setIsFetchingDashboard(false);
+
       // Fetch earnings for all tickers in background
       fetchEarningsForBatch(symbols);
 
@@ -269,25 +269,25 @@ function App() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tickers: symbols, horizon: otherHorizon, macro: useMacro ? "true" : "false" })
       })
-      .then(r => r.json())
-      .then(resOther => {
-        setTickers(currentTickers => {
-          return currentTickers.map(t => {
-            const otherT = (resOther.results || []).find(o => o.ticker === t.ticker);
-            if (!otherT) return t;
-            
-            logPrediction(otherT.ticker, otherHorizon, otherT.predicted_trend, otherT.confidence, otherT.current_price);
-            
-            return {
-              ...t,
-              trend_1d: horizon === '1d' ? t.trend_1d : otherT.predicted_trend,
-              trend_5d: horizon === '5d' ? t.trend_5d : otherT.predicted_trend,
-              hasDivergence: t.predicted_trend !== otherT.predicted_trend
-            };
+        .then(r => r.json())
+        .then(resOther => {
+          setTickers(currentTickers => {
+            return currentTickers.map(t => {
+              const otherT = (resOther.results || []).find(o => o.ticker === t.ticker);
+              if (!otherT) return t;
+
+              logPrediction(otherT.ticker, otherHorizon, otherT.predicted_trend, otherT.confidence, otherT.current_price);
+
+              return {
+                ...t,
+                trend_1d: horizon === '1d' ? t.trend_1d : otherT.predicted_trend,
+                trend_5d: horizon === '5d' ? t.trend_5d : otherT.predicted_trend,
+                hasDivergence: t.predicted_trend !== otherT.predicted_trend
+              };
+            });
           });
-        });
-      })
-      .catch(err => console.error("Divergence fetch failed", err));
+        })
+        .catch(err => console.error("Divergence fetch failed", err));
 
       if (wsRef.current && wsRef.current.readyState === 1) {
         symbols.forEach(sym => {
@@ -326,19 +326,19 @@ function App() {
   const savePosition = async (symbol, priceStr, dateStr) => {
     const price = priceStr ? parseFloat(priceStr) : null;
     const date = dateStr ? dateStr : null;
-    
+
     try {
       await supabase.from('watchlist').update({ entry_price: price, entry_date: date })
         .eq('user_id', session.user.id)
         .eq('ticker', symbol);
-        
+
       setTickers(prev => prev.map(t => {
         if (t.ticker === symbol) {
           return { ...t, entry_price: price, entry_date: date };
         }
         return t;
       }));
-      
+
       if (expandedTicker && expandedTicker.ticker === symbol) {
         setExpandedTicker(prev => ({ ...prev, entry_price: price, entry_date: date }));
       }
@@ -353,7 +353,7 @@ function App() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/trending?horizon=${horizon}&macro=${useMacro ? 'true' : 'false'}`);
       const data = await res.json();
-      
+
       const newInitialPrices = { ...livePrices };
       (data.trending || []).forEach(t => {
         if (!newInitialPrices[t.ticker]) newInitialPrices[t.ticker] = t.current_price;
@@ -410,7 +410,7 @@ function App() {
       if (response.type === 'trade') {
         const updates = {};
         const newFlashStates = {};
-        
+
         response.data.forEach(trade => {
           updates[trade.s] = trade.p;
         });
@@ -453,7 +453,7 @@ function App() {
     if (finnhubKey || !session) return;
     const interval = setInterval(() => {
       const newFlashStates = {};
-      
+
       setLivePrices(prev => {
         const newPrices = { ...prev };
         Object.keys(newPrices).forEach(sym => {
@@ -480,9 +480,9 @@ function App() {
   const handleSearchChange = (e) => {
     const val = e.target.value;
     setSearchQuery(val);
-    
+
     if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
-    
+
     if (val.trim() === '') {
       setSuggestions([]);
       return;
@@ -504,7 +504,7 @@ function App() {
     setIsSearching(true);
     setSuggestions([]);
     setSearchQuery('');
-    
+
     await addTicker(tickerSymbol);
     setIsSearching(false);
   };
@@ -515,7 +515,7 @@ function App() {
     setIsLoadingIntraday(true);
     setIntradayData([]);
     setEarningsData(null);
-    
+
     if (true) {
       setIsLoadingEarnings(true);
       fetch(`${API_BASE_URL}/api/earnings/${ticker.ticker || ticker.symbol}`)
@@ -524,7 +524,7 @@ function App() {
         .catch(err => console.error("Earnings fetch err", err))
         .finally(() => setIsLoadingEarnings(false));
     }
-    
+
     try {
       const res = await fetch(`${API_BASE_URL}/api/intraday/${ticker.ticker || ticker.symbol}`);
       const data = await res.json();
@@ -537,7 +537,12 @@ function App() {
   };
 
   const signInWithGoogle = async () => {
-    await supabase.auth.signInWithOAuth({ provider: 'google' });
+    await supabase.auth.signInWithOAuth({ 
+      provider: 'google',
+      options: {
+        redirectTo: window.location.origin
+      }
+    });
   };
 
   const signOut = async () => {
@@ -566,7 +571,7 @@ function App() {
   const divergenceCount = tickers.filter(t => t.hasDivergence).length;
 
   let visibleTickers = tickers.filter(t => t.confidence >= minConfidence);
-  
+
   if (sortOption === 'confidence') {
     visibleTickers.sort((a, b) => b.confidence - a.confidence);
   } else if (sortOption === 'alphabetical') {
@@ -590,10 +595,10 @@ function App() {
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
           <div className="search-container" style={{ position: 'relative', marginTop: '0.5rem' }}>
             <form onSubmit={(e) => { e.preventDefault(); handlePredictTicker(searchQuery); }} style={{ display: 'flex', gap: '0.5rem' }}>
-              <input 
-                type="text" 
-                className="search-input" 
-                placeholder="Add ticker (e.g. Apple)" 
+              <input
+                type="text"
+                className="search-input"
+                placeholder="Add ticker (e.g. Apple)"
                 value={searchQuery}
                 onChange={handleSearchChange}
                 disabled={isSearching}
@@ -602,12 +607,12 @@ function App() {
                 {isSearching ? '...' : <Search size={18} />}
               </button>
             </form>
-            
+
             {suggestions.length > 0 && (
               <div className="suggestions-dropdown">
                 {suggestions.map((s, idx) => (
-                  <div 
-                    key={idx} 
+                  <div
+                    key={idx}
                     className="suggestion-item"
                     onClick={() => handlePredictTicker(s.symbol)}
                   >
@@ -645,21 +650,21 @@ function App() {
             </span>
           </div>
           <div className="summary-item" style={{ flexGrow: 1, display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
-             <select className="search-input" value={sortOption} onChange={(e) => setSortOption(e.target.value)} style={{ padding: '0.25rem 0.5rem' }}>
-               <option value="confidence">Sort by Confidence</option>
-               <option value="alphabetical">Sort Alphabetical</option>
-               <option value="divergence">Divergence First</option>
-             </select>
-             
-             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '0.375rem', padding: '0.25rem 0.5rem' }}>
-               <Filter size={14} color="var(--text-muted)" />
-               <select className="search-input" value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))} style={{ border: 'none', background: 'transparent', padding: 0 }}>
-                 <option value={0}>All Confidences</option>
-                 <option value={55}>Min 55%</option>
-                 <option value={65}>Min 65%</option>
-                 <option value={75}>Min 75%</option>
-               </select>
-             </div>
+            <select className="search-input" value={sortOption} onChange={(e) => setSortOption(e.target.value)} style={{ padding: '0.25rem 0.5rem' }}>
+              <option value="confidence">Sort by Confidence</option>
+              <option value="alphabetical">Sort Alphabetical</option>
+              <option value="divergence">Divergence First</option>
+            </select>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '0.375rem', padding: '0.25rem 0.5rem' }}>
+              <Filter size={14} color="var(--text-muted)" />
+              <select className="search-input" value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))} style={{ border: 'none', background: 'transparent', padding: 0 }}>
+                <option value={0}>All Confidences</option>
+                <option value={55}>Min 55%</option>
+                <option value={65}>Min 65%</option>
+                <option value={75}>Min 75%</option>
+              </select>
+            </div>
           </div>
         </div>
       )}
@@ -678,18 +683,18 @@ function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 'bold' }}>
           <Settings size={18} /> Model Parameters
         </div>
-        
+
         <div style={{ width: '1px', height: '24px', background: 'var(--border-color)', margin: '0 0.5rem' }}></div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>Horizon:</span>
-          <button 
+          <button
             onClick={() => setHorizon('1d')}
             style={{ cursor: 'pointer', padding: '4px 12px', borderRadius: '20px', fontSize: '0.875rem', border: horizon === '1d' ? '1px solid var(--accent)' : '1px solid var(--border-color)', background: horizon === '1d' ? 'var(--accent)' : 'transparent', color: horizon === '1d' ? '#fff' : 'var(--text-main)', transition: 'all 0.2s' }}
           >
             1-Day
           </button>
-          <button 
+          <button
             onClick={() => setHorizon('5d')}
             style={{ cursor: 'pointer', padding: '4px 12px', borderRadius: '20px', fontSize: '0.875rem', border: horizon === '5d' ? '1px solid var(--accent)' : '1px solid var(--border-color)', background: horizon === '5d' ? 'var(--accent)' : 'transparent', color: horizon === '5d' ? '#fff' : 'var(--text-main)', transition: 'all 0.2s' }}
           >
@@ -701,13 +706,13 @@ function App() {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>Macro Features:</span>
-          <button 
+          <button
             onClick={() => setUseMacro(false)}
             style={{ cursor: 'pointer', padding: '4px 12px', borderRadius: '20px', fontSize: '0.875rem', border: !useMacro ? '1px solid var(--accent)' : '1px solid var(--border-color)', background: !useMacro ? 'var(--accent)' : 'transparent', color: !useMacro ? '#fff' : 'var(--text-main)', transition: 'all 0.2s' }}
           >
             Off
           </button>
-          <button 
+          <button
             onClick={() => setUseMacro(true)}
             style={{ cursor: 'pointer', padding: '4px 12px', borderRadius: '20px', fontSize: '0.875rem', border: useMacro ? '1px solid var(--accent)' : '1px solid var(--border-color)', background: useMacro ? 'var(--accent)' : 'transparent', color: useMacro ? '#fff' : 'var(--text-main)', transition: 'all 0.2s' }}
           >
@@ -719,7 +724,7 @@ function App() {
         </div>
         <div style={{ width: '1px', height: '24px', background: 'var(--border-color)', margin: '0 0.5rem' }}></div>
 
-        <button 
+        <button
           onClick={requestNotificationPermission}
           disabled={notificationsEnabled}
           style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: '1px solid var(--border-color)', color: notificationsEnabled ? 'var(--up-color)' : 'var(--text-muted)', padding: '4px 12px', borderRadius: '20px', cursor: notificationsEnabled ? 'default' : 'pointer' }}
@@ -727,8 +732,8 @@ function App() {
           <Zap size={16} color={notificationsEnabled ? 'var(--up-color)' : 'var(--text-muted)'} />
           {notificationsEnabled ? 'Alerts Enabled' : 'Enable Alerts'}
         </button>
-        
-        {isFetchingDashboard && <div style={{marginLeft: 'auto', fontSize: '0.875rem', color: 'var(--accent)'}}>Updating Watchlist...</div>}
+
+        {isFetchingDashboard && <div style={{ marginLeft: 'auto', fontSize: '0.875rem', color: 'var(--accent)' }}>Updating Watchlist...</div>}
       </div>
 
       <div className="dashboard">
@@ -749,11 +754,11 @@ function App() {
             <h2 style={{ color: 'var(--text-main)', marginBottom: '0.5rem' }}>Loading Watchlist...</h2>
           </div>
         )}
-        
+
         {visibleTickers.map(ticker => {
           const price = livePrices[ticker.ticker] || ticker.current_price;
           const flash = flashStates[ticker.ticker];
-          
+
           let pnlElement = null;
           if (ticker.entry_price && price) {
             const diff = price - ticker.entry_price;
@@ -765,7 +770,7 @@ function App() {
               </div>
             );
           }
-          
+
           return (
             <div key={ticker.ticker} className={`card ${ticker.hasDivergence ? 'card-divergence' : ''}`} onClick={() => openDetailsModal(ticker)} style={{ cursor: 'pointer' }}>
               {ticker.hasDivergence && (
@@ -790,7 +795,7 @@ function App() {
                   </button>
                 </div>
               </div>
-              
+
               {ticker.hasDivergence && (
                 <div className="divergence-subtitle">
                   1-day {ticker.trend_1d} · 5-day {ticker.trend_5d}
@@ -805,7 +810,7 @@ function App() {
           );
         })}
       </div>
-      
+
       {hiddenCount > 0 && (
         <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.875rem', marginTop: '-1rem', marginBottom: '2rem' }}>
           {hiddenCount} ticker{hiddenCount !== 1 ? 's' : ''} hidden by confidence filter.
@@ -827,7 +832,7 @@ function App() {
             </button>
           </div>
         </div>
-        
+
         {showTrending && (
           <div className="dashboard">
             {isFetchingTrending && trendingTickers.length === 0 ? (
@@ -851,12 +856,12 @@ function App() {
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: '0.5rem' }}>
                       <span className="live-price">${(livePrices[t.ticker] || t.current_price).toFixed(2)}</span>
-                      <button 
-                        className="btn" 
+                      <button
+                        className="btn"
                         onClick={(e) => { e.stopPropagation(); handleAddTrending(t.ticker, e); }}
                         style={{ padding: '4px 8px', fontSize: '0.875rem' }}
                       >
-                        <Plus size={16} style={{ marginRight: '4px' }}/> Add
+                        <Plus size={16} style={{ marginRight: '4px' }} /> Add
                       </button>
                     </div>
                   </div>
@@ -894,15 +899,15 @@ function App() {
                   </div>
                 )}
               </div>
-            </div>            
+            </div>
             <div className="modal-tabs">
-              <button 
+              <button
                 className={`modal-tab ${activeTab === 'overview' ? 'active' : ''}`}
                 onClick={() => setActiveTab('overview')}
               >
                 Overview & Position
               </button>
-              <button 
+              <button
                 className={`modal-tab ${activeTab === 'intelligence' ? 'active' : ''}`}
                 onClick={() => setActiveTab('intelligence')}
               >
@@ -935,9 +940,9 @@ function App() {
                                 <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>P&L</p>
                                 <p style={{ fontSize: '1.125rem', fontWeight: 'bold', color: livePrices[expandedTicker.ticker] >= expandedTicker.entry_price ? 'var(--up-color)' : 'var(--down-color)' }}>
                                   {(livePrices[expandedTicker.ticker] - expandedTicker.entry_price) >= 0 ? '+' : ''}
-                                  ${(livePrices[expandedTicker.ticker] - expandedTicker.entry_price).toFixed(2)} 
+                                  ${(livePrices[expandedTicker.ticker] - expandedTicker.entry_price).toFixed(2)}
                                   <span style={{ fontSize: '0.875rem', marginLeft: '0.25rem' }}>
-                                    ({( ((livePrices[expandedTicker.ticker] - expandedTicker.entry_price) / expandedTicker.entry_price) * 100 ).toFixed(2)}%)
+                                    ({(((livePrices[expandedTicker.ticker] - expandedTicker.entry_price) / expandedTicker.entry_price) * 100).toFixed(2)}%)
                                   </span>
                                 </p>
                               </div>
@@ -947,8 +952,8 @@ function App() {
                           <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1rem' }}>Not tracking a position. Enter your buy details.</p>
                         )}
                       </div>
-                      
-                      <form 
+
+                      <form
                         onSubmit={(e) => {
                           e.preventDefault();
                           savePosition(expandedTicker.ticker, e.target.elements.price.value, e.target.elements.date.value);
@@ -980,9 +985,9 @@ function App() {
                       <ResponsiveContainer width="100%" height="90%">
                         <LineChart data={[...expandedTicker.history, { date: new Date().toISOString(), price: livePrices[expandedTicker.ticker] || expandedTicker.current_price }]} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
-                          <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={12} tickFormatter={(str) => { const date = new Date(str); return `${date.getMonth()+1}/${date.getDate()}`; }} />
+                          <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={12} tickFormatter={(str) => { const date = new Date(str); return `${date.getMonth() + 1}/${date.getDate()}`; }} />
                           <YAxis domain={['auto', 'auto']} stroke="var(--text-muted)" fontSize={12} tickFormatter={(val) => `$${val}`} width={60} />
-                          <Tooltip 
+                          <Tooltip
                             contentStyle={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '8px' }}
                             itemStyle={{ color: 'var(--text-main)' }}
                             labelFormatter={(label) => new Date(label).toLocaleDateString()}
@@ -996,7 +1001,7 @@ function App() {
                       </div>
                     )}
                   </div>
-                  
+
                   <div style={{ flex: '1 1 300px', height: '100%' }}>
                     <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>Intraday (5-min)</h3>
                     {isLoadingIntraday ? (
@@ -1043,7 +1048,7 @@ function App() {
                     </div>
                   </div>
                 )}
-                
+
                 <div style={{ padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
                   <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>Earnings Intelligence</h3>
                   {isLoadingEarnings ? (
