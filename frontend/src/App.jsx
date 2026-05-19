@@ -186,6 +186,61 @@ function App() {
     }
   };
 
+  const resolvePendingPredictions = async (priceMap) => {
+    if (!session) return;
+    try {
+      // Get all unresolved predictions for this user
+      const { data: pending, error } = await supabase
+        .from('predictions')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .is('resolved_correctly', null);
+
+      if (error || !pending || pending.length === 0) return;
+
+      const now = new Date();
+      const updates = [];
+
+      for (const pred of pending) {
+        const createdAt = new Date(pred.created_at);
+        const horizonDays = pred.horizon === '5d' ? 5 : 1;
+        const targetDate = new Date(createdAt);
+        targetDate.setDate(targetDate.getDate() + horizonDays);
+
+        // Only resolve if enough time has passed since the prediction
+        if (now < targetDate) continue;
+
+        // Use the price map from the latest batch predict if available,
+        // otherwise skip (we need a real price to compare against)
+        const currentPrice = priceMap[pred.ticker];
+        if (!currentPrice || !pred.base_price) continue;
+
+        // Did the price move in the predicted direction?
+        const actualDirection = currentPrice > pred.base_price ? 'UP' : 'DOWN';
+        const isCorrect = actualDirection === pred.predicted_direction;
+
+        updates.push({ id: pred.id, resolved_correctly: isCorrect });
+      }
+
+      if (updates.length === 0) return;
+
+      // Batch update resolved predictions
+      for (const update of updates) {
+        await supabase
+          .from('predictions')
+          .update({ resolved_correctly: update.resolved_correctly })
+          .eq('id', update.id);
+      }
+
+      console.log(`Resolved ${updates.length} prediction(s)`);
+
+      // Reload win rates so the accuracy bars update
+      loadWinRates();
+    } catch (e) {
+      console.error("Failed to resolve predictions:", e);
+    }
+  };
+
   const fetchEarningsForBatch = async (symbols) => {
     setIsFetchingEarningsBatch(true);
     const newEarnings = { ...earningsMap };
@@ -262,6 +317,9 @@ function App() {
 
       // Fetch earnings for all tickers in background
       fetchEarningsForBatch(symbols);
+
+      // Resolve any matured predictions in the background so accuracy bars populate
+      resolvePendingPredictions(initialPrices);
 
       // Slow path: fetch the other horizon in the background for divergence detection
       const otherHorizon = horizon === '1d' ? '5d' : '1d';
