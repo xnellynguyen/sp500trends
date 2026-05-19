@@ -186,7 +186,7 @@ function App() {
     }
   };
 
-  const resolvePendingPredictions = async (priceMap) => {
+  const resolvePendingPredictions = async () => {
     if (!session) return;
     try {
       // Get all unresolved predictions for this user
@@ -199,26 +199,50 @@ function App() {
       if (error || !pending || pending.length === 0) return;
 
       const now = new Date();
-      const updates = [];
+      const matured = [];
 
+      // Filter to predictions where enough time has passed
       for (const pred of pending) {
+        if (!pred.base_price) continue;
         const createdAt = new Date(pred.created_at);
         const horizonDays = pred.horizon === '5d' ? 5 : 1;
         const targetDate = new Date(createdAt);
         targetDate.setDate(targetDate.getDate() + horizonDays);
 
-        // Only resolve if enough time has passed since the prediction
         if (now < targetDate) continue;
 
-        // Use the price map from the latest batch predict if available,
-        // otherwise skip (we need a real price to compare against)
-        const currentPrice = priceMap[pred.ticker];
-        if (!currentPrice || !pred.base_price) continue;
+        const dateStr = targetDate.toISOString().split('T')[0];
+        matured.push({ ...pred, _targetDate: dateStr });
+      }
 
-        // Did the price move in the predicted direction?
-        const actualDirection = currentPrice > pred.base_price ? 'UP' : 'DOWN';
+      if (matured.length === 0) return;
+
+      // Deduplicate ticker+date pairs for the API call
+      const uniqueChecks = {};
+      for (const pred of matured) {
+        const key = `${pred.ticker}_${pred._targetDate}`;
+        if (!uniqueChecks[key]) {
+          uniqueChecks[key] = { ticker: pred.ticker, date: pred._targetDate };
+        }
+      }
+
+      // Fetch actual historical prices from the backend
+      const res = await fetch(`${API_BASE_URL}/api/historical_prices`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ checks: Object.values(uniqueChecks) })
+      });
+      const { prices } = await res.json();
+
+      // Resolve each prediction against the real price on the target date
+      const updates = [];
+      for (const pred of matured) {
+        const key = `${pred.ticker}_${pred._targetDate}`;
+        const actualPrice = prices[key];
+        if (actualPrice == null) continue;
+
+        const actualDirection = actualPrice > pred.base_price ? 'UP' : 'DOWN';
         const isCorrect = actualDirection === pred.predicted_direction;
-
         updates.push({ id: pred.id, resolved_correctly: isCorrect });
       }
 
@@ -232,7 +256,7 @@ function App() {
           .eq('id', update.id);
       }
 
-      console.log(`Resolved ${updates.length} prediction(s)`);
+      console.log(`Resolved ${updates.length} prediction(s) using historical prices`);
 
       // Reload win rates so the accuracy bars update
       loadWinRates();
@@ -319,7 +343,7 @@ function App() {
       fetchEarningsForBatch(symbols);
 
       // Resolve any matured predictions in the background so accuracy bars populate
-      resolvePendingPredictions(initialPrices);
+      resolvePendingPredictions();
 
       // Slow path: fetch the other horizon in the background for divergence detection
       const otherHorizon = horizon === '1d' ? '5d' : '1d';

@@ -406,3 +406,51 @@ def get_trending(horizon: str = "1d", macro: str = "false"):
     results.sort(key=lambda x: x["confidence"], reverse=True)
             
     return {"trending": results}
+
+
+class PriceCheck(BaseModel):
+    ticker: str
+    date: str  # "YYYY-MM-DD"
+
+class HistoricalPricesRequest(BaseModel):
+    checks: List[PriceCheck]
+
+@app.post("/api/historical_prices")
+def get_historical_prices(req: HistoricalPricesRequest):
+    """Return the closing price for each ticker on (or just before) the given date."""
+    results = {}
+
+    def fetch_price(check):
+        try:
+            target = datetime.strptime(check.date, "%Y-%m-%d").date()
+            # Fetch a small window around the target date to handle weekends/holidays
+            start = target - pd.Timedelta(days=5)
+            end = target + pd.Timedelta(days=1)
+
+            df = yf.Ticker(check.ticker).history(start=str(start), end=str(end))
+            if df.empty:
+                return check.ticker, check.date, None
+
+            if hasattr(df.index, 'tz_localize'):
+                df.index = df.index.tz_localize(None)
+
+            # Get the last close on or before the target date
+            mask = df.index.date <= target
+            valid = df[mask]
+            if valid.empty:
+                return check.ticker, check.date, None
+
+            close = float(valid['Close'].iloc[-1])
+            return check.ticker, check.date, round(close, 2)
+        except Exception as e:
+            print(f"Historical price error for {check.ticker} on {check.date}: {e}")
+            return check.ticker, check.date, None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(fetch_price, c) for c in req.checks]
+        for future in concurrent.futures.as_completed(futures):
+            ticker, dt, price = future.result()
+            key = f"{ticker}_{dt}"
+            results[key] = price
+
+    return {"prices": results}
