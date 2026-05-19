@@ -186,7 +186,7 @@ function App() {
     }
   };
 
-  const resolvePendingPredictions = async () => {
+  const resolvePendingPredictions = async (fallbackPrices) => {
     if (!session) return;
     try {
       // Get all unresolved predictions for this user
@@ -217,28 +217,48 @@ function App() {
 
       if (matured.length === 0) return;
 
-      // Deduplicate ticker+date pairs for the API call
-      const uniqueChecks = {};
-      for (const pred of matured) {
-        const key = `${pred.ticker}_${pred._targetDate}`;
-        if (!uniqueChecks[key]) {
-          uniqueChecks[key] = { ticker: pred.ticker, date: pred._targetDate };
+      // Try to fetch actual historical prices from the backend
+      let prices = null;
+      try {
+        const uniqueChecks = {};
+        for (const pred of matured) {
+          const key = `${pred.ticker}_${pred._targetDate}`;
+          if (!uniqueChecks[key]) {
+            uniqueChecks[key] = { ticker: pred.ticker, date: pred._targetDate };
+          }
         }
+
+        const res = await fetch(`${API_BASE_URL}/api/historical_prices`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ checks: Object.values(uniqueChecks) })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          prices = data.prices;
+          console.log("Using historical prices for resolution");
+        }
+      } catch (e) {
+        console.warn("Historical prices endpoint unavailable, using fallback prices");
       }
 
-      // Fetch actual historical prices from the backend
-      const res = await fetch(`${API_BASE_URL}/api/historical_prices`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ checks: Object.values(uniqueChecks) })
-      });
-      const { prices } = await res.json();
-
-      // Resolve each prediction against the real price on the target date
+      // Resolve each prediction
       const updates = [];
       for (const pred of matured) {
-        const key = `${pred.ticker}_${pred._targetDate}`;
-        const actualPrice = prices[key];
+        let actualPrice = null;
+
+        // Prefer historical price if available
+        if (prices) {
+          const key = `${pred.ticker}_${pred._targetDate}`;
+          actualPrice = prices[key];
+        }
+
+        // Fallback to current price if historical not available
+        if (actualPrice == null && fallbackPrices) {
+          actualPrice = fallbackPrices[pred.ticker];
+        }
+
         if (actualPrice == null) continue;
 
         const actualDirection = actualPrice > pred.base_price ? 'UP' : 'DOWN';
@@ -256,7 +276,7 @@ function App() {
           .eq('id', update.id);
       }
 
-      console.log(`Resolved ${updates.length} prediction(s) using historical prices`);
+      console.log(`Resolved ${updates.length} prediction(s)`);
 
       // Reload win rates so the accuracy bars update
       loadWinRates();
@@ -343,7 +363,7 @@ function App() {
       fetchEarningsForBatch(symbols);
 
       // Resolve any matured predictions in the background so accuracy bars populate
-      resolvePendingPredictions();
+      resolvePendingPredictions(initialPrices);
 
       // Slow path: fetch the other horizon in the background for divergence detection
       const otherHorizon = horizon === '1d' ? '5d' : '1d';
