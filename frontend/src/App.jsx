@@ -806,6 +806,25 @@ function App() {
                 ${price.toFixed(2)}
               </div>
               {pnlElement}
+
+              {/* Mini sparkline history bar */}
+              {ticker.history && ticker.history.length > 1 && (
+                <div style={{ height: '40px', marginTop: '0.5rem' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={ticker.history}>
+                      <Line
+                        type="monotone"
+                        dataKey="price"
+                        stroke={ticker.predicted_trend === 'UP' ? 'var(--up-color)' : 'var(--down-color)'}
+                        strokeWidth={1.5}
+                        dot={false}
+                        isAnimationActive={false}
+                      />
+                      <YAxis domain={['dataMin', 'dataMax']} hide />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </div>
           );
         })}
@@ -1055,22 +1074,28 @@ function App() {
                     <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading earnings data...</p>
                   ) : earningsData && !earningsData.error ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
-                        <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Next Earnings:</span>
-                        <span style={{ color: earningsData.is_warning ? 'var(--down-color)' : 'var(--text-main)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                          {earningsData.is_warning && <AlertTriangle size={14} />}
-                          {earningsData.next_earnings_date} ({earningsData.days_until} days)
-                        </span>
-                      </div>
-                      {earningsData.analyst && (
+                      {earningsData.next_earnings_date ? (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Next Earnings:</span>
+                          <span style={{ color: earningsData.is_warning ? 'var(--down-color)' : 'var(--text-main)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            {earningsData.is_warning && <AlertTriangle size={14} />}
+                            {earningsData.next_earnings_date} ({earningsData.days_until} days)
+                          </span>
+                        </div>
+                      ) : (
+                        <div style={{ padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Next earnings date not available</span>
+                        </div>
+                      )}
+                      {earningsData.analyst && earningsData.analyst.consensus !== 'UNKNOWN' && (
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
                           <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Analyst Consensus:</span>
-                          <span style={{ color: earningsData.analyst.consensus === 'BUY' ? 'var(--up-color)' : 'var(--text-main)', fontWeight: 'bold' }}>
-                            {earningsData.analyst.consensus} ({earningsData.analyst.buy_count}/{earningsData.analyst.total_count} Buy)
+                          <span style={{ color: earningsData.analyst.consensus === 'BUY' ? 'var(--up-color)' : earningsData.analyst.consensus === 'SELL' ? 'var(--down-color)' : 'var(--text-main)', fontWeight: 'bold' }}>
+                            {earningsData.analyst.consensus}
                           </span>
                         </div>
                       )}
-                      {earningsData.historical_beats && (
+                      {earningsData.historical_beats && earningsData.historical_beats.beat_rate != null && (
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
                           <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Earnings Beat Rate:</span>
                           <span style={{ color: 'var(--text-main)', fontWeight: 'bold' }}>
@@ -1078,9 +1103,12 @@ function App() {
                           </span>
                         </div>
                       )}
+                      {!earningsData.next_earnings_date && (!earningsData.analyst || earningsData.analyst.consensus === 'UNKNOWN') && (!earningsData.historical_beats || earningsData.historical_beats.beat_rate == null) && (
+                        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>No earnings data available for this ticker.</p>
+                      )}
                     </div>
                   ) : (
-                    <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Failed to load earnings data.</p>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Earnings data unavailable. The backend may still be deploying.</p>
                   )}
                 </div>
               </div>
