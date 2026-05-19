@@ -825,6 +825,28 @@ function App() {
                   </ResponsiveContainer>
                 </div>
               )}
+
+              {/* Model accuracy / win rate bar */}
+              {winRates[ticker.ticker] && (
+                <div className="win-rate-container">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Model Accuracy</span>
+                    <span style={{ fontSize: '0.75rem', fontWeight: '600', color: winRates[ticker.ticker].rate >= 60 ? 'var(--up-color)' : winRates[ticker.ticker].rate >= 45 ? '#fbbf24' : 'var(--down-color)' }}>
+                      {winRates[ticker.ticker].rate}% ({winRates[ticker.ticker].total} predictions)
+                    </span>
+                  </div>
+                  <div className="progress-bg">
+                    <div
+                      className="progress-bar"
+                      style={{
+                        width: `${winRates[ticker.ticker].rate}%`,
+                        background: winRates[ticker.ticker].rate >= 60 ? 'var(--up-color)' : winRates[ticker.ticker].rate >= 45 ? '#fbbf24' : 'var(--down-color)',
+                        transition: 'width 0.5s ease'
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
