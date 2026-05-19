@@ -122,6 +122,19 @@ function App() {
   const logPrediction = async (ticker, horizonStr, trend, confidence, basePrice) => {
     if (!session) return;
     try {
+      // Dedup: only log one prediction per ticker/horizon per 12 hours
+      const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+      const { data: existing } = await supabase
+        .from('predictions')
+        .select('id')
+        .eq('user_id', session.user.id)
+        .eq('ticker', ticker)
+        .eq('horizon', horizonStr)
+        .gte('created_at', cutoff)
+        .limit(1);
+
+      if (existing && existing.length > 0) return;
+
       await supabase.from('predictions').insert({
         user_id: session.user.id,
         ticker,
