@@ -4,7 +4,19 @@ import { LineChart, Line, ResponsiveContainer, YAxis, XAxis, Tooltip, CartesianG
 import { supabase } from './supabaseClient';
 import './index.css';
 
+import Header from './components/Header';
+import TrendCard from './components/TrendCard';
+import TrendingSection from './components/TrendingSection';
+import DetailsModal from './components/modals/DetailsModal';
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://sp500-predictor-697399258111.us-central1.run.app';
+
+const getAuthHeaders = (session) => {
+  const headers = { 'Content-Type': 'application/json' };
+  if (session?.access_token) {
+    headers['Authorization'] = `Bearer ${session.access_token}`;
+  }
+  return headers;
+};
 
 function App() {
   const [session, setSession] = useState(null);
@@ -44,8 +56,16 @@ function App() {
   const [isLoadingEarnings, setIsLoadingEarnings] = useState(false);
 
   // Model parameters
-  const [horizon, setHorizon] = useState('1d');
-  const [useMacro, setUseMacro] = useState(false);
+  const [horizon, setHorizon] = useState(() => localStorage.getItem('sp500_horizon') || '1d');
+  const [useMacro, setUseMacro] = useState(() => localStorage.getItem('sp500_useMacro') === 'true');
+
+  useEffect(() => {
+    localStorage.setItem('sp500_horizon', horizon);
+  }, [horizon]);
+
+  useEffect(() => {
+    localStorage.setItem('sp500_useMacro', String(useMacro));
+  }, [useMacro]);
   const [isFetchingDashboard, setIsFetchingDashboard] = useState(false);
   const [minConfidence, setMinConfidence] = useState(0);
   const [earningsMap, setEarningsMap] = useState({});
@@ -55,7 +75,7 @@ function App() {
   const [trendingTickers, setTrendingTickers] = useState([]);
   const [isFetchingTrending, setIsFetchingTrending] = useState(false);
   const [showTrending, setShowTrending] = useState(false);
-  const [expandedCards, setExpandedCards] = useState({});
+  // expandedCards state removed
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
 
   useEffect(() => {
@@ -172,25 +192,85 @@ function App() {
     try {
       const { data, error } = await supabase
         .from('predictions')
-        .select('ticker, resolved_correctly')
+        .select('ticker, horizon, confidence, created_at, resolved_correctly')
         .eq('user_id', session.user.id)
         .not('resolved_correctly', 'is', null);
 
       if (error) throw error;
 
       const rates = {};
+      const now = new Date();
+      
       data.forEach(p => {
-        if (!rates[p.ticker]) rates[p.ticker] = { total: 0, wins: 0 };
-        rates[p.ticker].total += 1;
-        if (p.resolved_correctly) rates[p.ticker].wins += 1;
+        if (!rates[p.ticker]) {
+          rates[p.ticker] = {
+            overall: { wins: 0, total: 0 },
+            '1d': { wins: 0, total: 0 },
+            '5d': { wins: 0, total: 0 },
+            rolling30d: { wins: 0, total: 0 },
+            buckets: {
+              '50-60%': { wins: 0, total: 0 },
+              '60-70%': { wins: 0, total: 0 },
+              '70-80%': { wins: 0, total: 0 },
+              '80%+': { wins: 0, total: 0 }
+            }
+          };
+        }
+        
+        const r = rates[p.ticker];
+        const isWin = p.resolved_correctly ? 1 : 0;
+        
+        // Overall
+        r.overall.total += 1;
+        r.overall.wins += isWin;
+        
+        // Horizon
+        if (p.horizon === '1d') {
+          r['1d'].total += 1;
+          r['1d'].wins += isWin;
+        } else if (p.horizon === '5d') {
+          r['5d'].total += 1;
+          r['5d'].wins += isWin;
+        }
+        
+        // Rolling 30d
+        const createdDate = new Date(p.created_at);
+        const diffDays = (now - createdDate) / (1000 * 3600 * 24);
+        if (diffDays <= 30) {
+          r.rolling30d.total += 1;
+          r.rolling30d.wins += isWin;
+        }
+        
+        // Buckets
+        const conf = p.confidence * 100;
+        let bucket = '50-60%';
+        if (conf >= 80) bucket = '80%+';
+        else if (conf >= 70) bucket = '70-80%';
+        else if (conf >= 60) bucket = '60-70%';
+        
+        r.buckets[bucket].total += 1;
+        r.buckets[bucket].wins += isWin;
       });
 
       const formatted = {};
       Object.keys(rates).forEach(t => {
+        const r = rates[t];
+        const calcRate = (wins, total) => total > 0 ? Math.round((wins / total) * 100) : null;
+        
         formatted[t] = {
-          rate: Math.round((rates[t].wins / rates[t].total) * 100),
-          total: rates[t].total
+          overall: { rate: calcRate(r.overall.wins, r.overall.total), total: r.overall.total },
+          '1d': { rate: calcRate(r['1d'].wins, r['1d'].total), total: r['1d'].total },
+          '5d': { rate: calcRate(r['5d'].wins, r['5d'].total), total: r['5d'].total },
+          rolling30d: { rate: calcRate(r.rolling30d.wins, r.rolling30d.total), total: r.rolling30d.total },
+          buckets: {}
         };
+        
+        Object.keys(r.buckets).forEach(b => {
+          formatted[t].buckets[b] = {
+            rate: calcRate(r.buckets[b].wins, r.buckets[b].total),
+            total: r.buckets[b].total
+          };
+        });
       });
 
       setWinRates(formatted);
@@ -199,127 +279,6 @@ function App() {
     }
   };
 
-  const resolvePendingPredictions = async (fallbackPrices) => {
-    if (!session) return;
-    try {
-      // Get all unresolved predictions for this user
-      const { data: pending, error } = await supabase
-        .from('predictions')
-        .select('*')
-        .eq('user_id', session.user.id)
-        .is('resolved_correctly', null);
-
-      if (error || !pending || pending.length === 0) return;
-
-      const now = new Date();
-      const matured = [];
-
-      // Filter to predictions where enough time has passed
-      for (const pred of pending) {
-        if (!pred.base_price) continue;
-        const createdAt = new Date(pred.created_at);
-        const horizonDays = pred.horizon === '5d' ? 5 : 1;
-        const targetDate = new Date(createdAt);
-        targetDate.setDate(targetDate.getDate() + horizonDays);
-
-        if (now < targetDate) continue;
-
-        const dateStr = targetDate.toISOString().split('T')[0];
-        matured.push({ ...pred, _targetDate: dateStr });
-      }
-
-      if (matured.length === 0) return;
-
-      // Try to fetch actual historical prices from the backend
-      let prices = null;
-      try {
-        const uniqueChecks = {};
-        for (const pred of matured) {
-          const key = `${pred.ticker}_${pred._targetDate}`;
-          if (!uniqueChecks[key]) {
-            uniqueChecks[key] = { ticker: pred.ticker, date: pred._targetDate };
-          }
-        }
-
-        const res = await fetch(`${API_BASE_URL}/api/historical_prices`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ checks: Object.values(uniqueChecks) })
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          prices = data.prices;
-          console.log("Using historical prices for resolution");
-        }
-      } catch (e) {
-        console.warn("Historical prices endpoint unavailable, using fallback prices");
-      }
-
-      // Resolve each prediction
-      const updates = [];
-      for (const pred of matured) {
-        let actualPrice = null;
-
-        // Prefer historical price if available
-        if (prices) {
-          const key = `${pred.ticker}_${pred._targetDate}`;
-          actualPrice = prices[key];
-        }
-
-        // Fallback to current price if historical not available
-        if (actualPrice == null && fallbackPrices) {
-          actualPrice = fallbackPrices[pred.ticker];
-        }
-
-        if (actualPrice == null) continue;
-
-        const actualDirection = actualPrice > pred.base_price ? 'UP' : 'DOWN';
-        const isCorrect = actualDirection === pred.predicted_direction;
-        updates.push({ id: pred.id, resolved_correctly: isCorrect });
-      }
-
-      if (updates.length === 0) return;
-
-      // Batch update resolved predictions
-      for (const update of updates) {
-        await supabase
-          .from('predictions')
-          .update({ resolved_correctly: update.resolved_correctly })
-          .eq('id', update.id);
-      }
-
-      console.log(`Resolved ${updates.length} prediction(s)`);
-
-      // Reload win rates so the accuracy bars update
-      loadWinRates();
-    } catch (e) {
-      console.error("Failed to resolve predictions:", e);
-    }
-  };
-
-  const fetchEarningsForBatch = async (symbols) => {
-    setIsFetchingEarningsBatch(true);
-    const newEarnings = { ...earningsMap };
-
-    // Fetch in parallel with a small delay to avoid hitting rate limits too fast
-    // though FMP is usually okay with some concurrency
-    const promises = symbols.map(async (symbol) => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/earnings/${symbol}`);
-        const data = await response.json();
-        if (!data.error) {
-          newEarnings[symbol] = data;
-        }
-      } catch (e) {
-        console.error(`Failed to fetch earnings for ${symbol}`, e);
-      }
-    });
-
-    await Promise.all(promises);
-    setEarningsMap(newEarnings);
-    setIsFetchingEarningsBatch(false);
-  };
 
   const loadWatchlist = async () => {
     setIsFetchingDashboard(true);
@@ -344,7 +303,7 @@ function App() {
 
       // Fast path: fetch only the active horizon
       const resMain = await fetch(`${API_BASE_URL}/api/predict_batch`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: getAuthHeaders(session),
         body: JSON.stringify({ tickers: symbols, horizon: horizon, macro: useMacro ? "true" : "false" })
       }).then(r => r.json());
 
@@ -371,17 +330,11 @@ function App() {
       setTickers(baseTickers);
       setLivePrices(initialPrices);
       setIsFetchingDashboard(false);
-
-      // Fetch earnings for all tickers in background
-      fetchEarningsForBatch(symbols);
-
-      // Resolve any matured predictions in the background so accuracy bars populate
-      resolvePendingPredictions(initialPrices);
-
+      // Slow path: fetch the other horizon in the background for divergence detection
       // Slow path: fetch the other horizon in the background for divergence detection
       const otherHorizon = horizon === '1d' ? '5d' : '1d';
       fetch(`${API_BASE_URL}/api/predict_batch`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: getAuthHeaders(session),
         body: JSON.stringify({ tickers: symbols, horizon: otherHorizon, macro: useMacro ? "true" : "false" })
       })
         .then(r => r.json())
@@ -466,7 +419,9 @@ function App() {
     setIsFetchingTrending(true);
     setShowTrending(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/trending?horizon=${horizon}&macro=${useMacro ? 'true' : 'false'}`);
+      const res = await fetch(`${API_BASE_URL}/api/trending?horizon=${horizon}&macro=${useMacro ? 'true' : 'false'}`, {
+        headers: getAuthHeaders(session)
+      });
       const data = await res.json();
 
       const newInitialPrices = { ...livePrices };
@@ -605,7 +560,9 @@ function App() {
 
     searchTimeoutRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/search?q=${encodeURIComponent(val)}`);
+        const res = await fetch(`${API_BASE_URL}/api/search?q=${encodeURIComponent(val)}`, {
+          headers: getAuthHeaders(session)
+        });
         const data = await res.json();
         setSuggestions(data.results || []);
       } catch (err) {
@@ -631,17 +588,19 @@ function App() {
     setIntradayData([]);
     setEarningsData(null);
 
-    if (true) {
-      setIsLoadingEarnings(true);
-      fetch(`${API_BASE_URL}/api/earnings/${ticker.ticker || ticker.symbol}`)
-        .then(r => r.json())
-        .then(d => setEarningsData(d))
-        .catch(err => console.error("Earnings fetch err", err))
-        .finally(() => setIsLoadingEarnings(false));
-    }
+    setIsLoadingEarnings(true);
+    fetch(`${API_BASE_URL}/api/earnings/${ticker.ticker || ticker.symbol}`, {
+      headers: getAuthHeaders(session)
+    })
+      .then(r => r.json())
+      .then(d => setEarningsData(d))
+      .catch(err => console.error("Earnings fetch err", err))
+      .finally(() => setIsLoadingEarnings(false));
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/intraday/${ticker.ticker || ticker.symbol}`);
+      const res = await fetch(`${API_BASE_URL}/api/intraday/${ticker.ticker || ticker.symbol}`, {
+        headers: getAuthHeaders(session)
+      });
       const data = await res.json();
       setIntradayData(data.history || []);
     } catch (err) {
@@ -699,50 +658,15 @@ function App() {
 
   return (
     <div className="container">
-      <header className="header" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <div>
-          <h1 className="title"><Activity color="var(--accent)" /> AI Trend Predictor</h1>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-muted)', marginTop: '0.5rem', fontSize: '0.875rem' }}>
-            <Calendar size={14} />
-            <span>{currentDate}</span>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-          <div className="search-container" style={{ position: 'relative', marginTop: '0.5rem' }}>
-            <form onSubmit={(e) => { e.preventDefault(); handlePredictTicker(searchQuery); }} style={{ display: 'flex', gap: '0.5rem' }}>
-              <input
-                type="text"
-                className="search-input"
-                placeholder="Add ticker (e.g. Apple)"
-                value={searchQuery}
-                onChange={handleSearchChange}
-                disabled={isSearching}
-              />
-              <button type="submit" className="btn" disabled={isSearching}>
-                {isSearching ? '...' : <Search size={18} />}
-              </button>
-            </form>
-
-            {suggestions.length > 0 && (
-              <div className="suggestions-dropdown">
-                {suggestions.map((s, idx) => (
-                  <div
-                    key={idx}
-                    className="suggestion-item"
-                    onClick={() => handlePredictTicker(s.symbol)}
-                  >
-                    <span className="suggestion-symbol">{s.symbol}</span>
-                    <span className="suggestion-name">{s.name}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          <button onClick={signOut} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
-            <LogOut size={16} /> Sign out
-          </button>
-        </div>
-      </header>
+      <Header
+        currentDate={currentDate}
+        searchQuery={searchQuery}
+        handleSearchChange={handleSearchChange}
+        handlePredictTicker={handlePredictTicker}
+        isSearching={isSearching}
+        suggestions={suggestions}
+        signOut={signOut}
+      />
 
       {tickers.length > 0 && (
         <div className="portfolio-summary">
@@ -784,12 +708,11 @@ function App() {
         </div>
       )}
 
-      {/* Global Earnings Warning Banner */}
-      {Object.values(earningsMap).some(e => e.is_warning) && (
+      {Object.values(earningsMap).some(e => e?.is_warning) && (
         <div className="config-banner" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--down-color)', color: '#fca5a5', marginBottom: '1.5rem', padding: '0.75rem' }}>
           <AlertTriangle size={20} />
           <span>
-            <strong>High Volatility Warning:</strong> {Object.values(earningsMap).filter(e => e.is_warning).length} ticker(s) in your watchlist have earnings within 5 days.
+            <strong>High Volatility Warning:</strong> {Object.values(earningsMap).filter(e => e?.is_warning).length} ticker(s) in your watchlist have earnings within 5 days.
           </span>
         </div>
       )}
@@ -871,98 +794,26 @@ function App() {
         )}
 
         {visibleTickers.map(ticker => {
-          const price = livePrices[ticker.ticker] || ticker.current_price;
-          const flash = flashStates[ticker.ticker];
-
-          let pnlElement = null;
-          if (ticker.entry_price && price) {
-            const diff = price - ticker.entry_price;
-            const pct = (diff / ticker.entry_price) * 100;
-            const isProfit = diff >= 0;
-            pnlElement = (
-              <div style={{ fontSize: '0.875rem', color: isProfit ? 'var(--up-color)' : 'var(--down-color)', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                {isProfit ? '+' : ''}{diff.toFixed(2)} ({isProfit ? '+' : ''}{pct.toFixed(2)}%)
-              </div>
-            );
-          }
-
+          const fullWinRate = winRates[ticker.ticker];
+          // Use horizon specific rate if available, otherwise fallback to overall
+          const displayWinRate = fullWinRate ? (fullWinRate[horizon].total > 0 ? fullWinRate[horizon] : fullWinRate.overall) : null;
+          
           return (
-            <div key={ticker.ticker} className={`card ${ticker.hasDivergence ? 'card-divergence' : ''}`} onClick={() => openDetailsModal(ticker)} style={{ cursor: 'pointer' }}>
-              {ticker.hasDivergence && (
-                <div className="divergence-tag">
-                  <AlertTriangle size={14} /> Divergence Alert
-                </div>
-              )}
-              {earningsMap[ticker.ticker]?.is_warning && (
-                <div className="earnings-tag">
-                  <Zap size={14} /> Earnings Soon
-                </div>
-              )}
-              <div className="card-header">
-                <span className="ticker-name">{ticker.ticker}</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <div className={`prediction-badge ${ticker.predicted_trend === 'UP' ? 'prediction-up' : 'prediction-down'}`}>
-                    {ticker.predicted_trend === 'UP' ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-                    <span>{ticker.predicted_trend} ({ticker.confidence}%)</span>
-                  </div>
-                  <button className="remove-btn" onClick={(e) => { e.stopPropagation(); removeTicker(ticker.ticker, e); }} title="Remove from watchlist">
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </div>
-
-              {ticker.hasDivergence && (
-                <div className="divergence-subtitle">
-                  1-day {ticker.trend_1d} · 5-day {ticker.trend_5d}
-                </div>
-              )}
-
-              <div className={`live-price ${flash === 'up' ? 'flash-up' : flash === 'down' ? 'flash-down' : ''}`} style={{ marginTop: ticker.hasDivergence ? '0.5rem' : '0' }}>
-                ${price.toFixed(2)}
-              </div>
-              {pnlElement}
-
-              {/* Mini sparkline history bar */}
-              {ticker.history && ticker.history.length > 1 && (
-                <div style={{ height: '40px', marginTop: '0.5rem' }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={ticker.history}>
-                      <Line
-                        type="monotone"
-                        dataKey="price"
-                        stroke={ticker.predicted_trend === 'UP' ? 'var(--up-color)' : 'var(--down-color)'}
-                        strokeWidth={1.5}
-                        dot={false}
-                        isAnimationActive={false}
-                      />
-                      <YAxis domain={['dataMin', 'dataMax']} hide />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-
-              {/* Model accuracy / win rate bar */}
-              {winRates[ticker.ticker] && (
-                <div className="win-rate-container">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Model Accuracy</span>
-                    <span style={{ fontSize: '0.75rem', fontWeight: '600', color: winRates[ticker.ticker].rate >= 60 ? 'var(--up-color)' : winRates[ticker.ticker].rate >= 45 ? '#fbbf24' : 'var(--down-color)' }}>
-                      {winRates[ticker.ticker].rate}% ({winRates[ticker.ticker].total} predictions)
-                    </span>
-                  </div>
-                  <div className="progress-bg">
-                    <div
-                      className="progress-bar"
-                      style={{
-                        width: `${winRates[ticker.ticker].rate}%`,
-                        background: winRates[ticker.ticker].rate >= 60 ? 'var(--up-color)' : winRates[ticker.ticker].rate >= 45 ? '#fbbf24' : 'var(--down-color)',
-                        transition: 'width 0.5s ease'
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
+            <TrendCard
+              key={ticker.ticker}
+              ticker={ticker}
+              price={livePrices[ticker.ticker] || ticker.current_price}
+              flash={flashStates[ticker.ticker]}
+              earningsInfo={earningsMap[ticker.ticker]}
+              winRateInfo={displayWinRate}
+              fullWinRateInfo={fullWinRate} // pass full info so DetailsModal can use it
+              openDetailsModal={() => {
+                // Pass fullWinRate to DetailsModal
+                const t = { ...ticker, fullWinRate };
+                openDetailsModal(t);
+              }}
+              removeTicker={removeTicker}
+            />
           );
         })}
       </div>
@@ -973,287 +824,33 @@ function App() {
         </div>
       )}
 
-      {/* Discover Trending Section */}
-      <div style={{ marginTop: '3rem', borderTop: '1px solid var(--border-color)', paddingTop: '2rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-          <h2 style={{ fontSize: '1.25rem', color: 'var(--text-main)' }}>Discover Trending Opportunities</h2>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            {showTrending && (
-              <button className="btn" onClick={loadTrending} disabled={isFetchingTrending} style={{ padding: '8px 16px', fontSize: '0.875rem', background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
-                Refresh
-              </button>
-            )}
-            <button className="btn" onClick={handleToggleTrending} disabled={isFetchingTrending} style={{ padding: '8px 16px', fontSize: '0.875rem' }}>
-              {isFetchingTrending ? 'Loading...' : (showTrending ? 'Hide Trending' : 'Load Scraped Tickers')}
-            </button>
-          </div>
-        </div>
+      <TrendingSection
+        showTrending={showTrending}
+        loadTrending={loadTrending}
+        handleToggleTrending={handleToggleTrending}
+        isFetchingTrending={isFetchingTrending}
+        trendingTickers={trendingTickers}
+        livePrices={livePrices}
+        horizon={horizon}
+        openDetailsModal={openDetailsModal}
+        handleAddTrending={handleAddTrending}
+      />
 
-        {showTrending && (
-          <div className="dashboard">
-            {isFetchingTrending && trendingTickers.length === 0 ? (
-              <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '2rem' }}>
-                <Activity size={32} color="var(--accent)" style={{ marginBottom: '1rem', animation: 'pulse 2s infinite' }} />
-                <p style={{ color: 'var(--text-muted)' }}>Scraping Yahoo Finance...</p>
-              </div>
-            ) : (
-              <div className="dashboard">
-                {trendingTickers.map((t) => (
-                  <div key={t.ticker} className="card" style={{ cursor: 'pointer', position: 'relative' }} onClick={() => openDetailsModal(t)}>
-                    <div className="card-header">
-                      <span className="ticker-name">{t.ticker}</span>
-                      <div className={`prediction-badge ${t.predicted_trend === 'UP' ? 'prediction-up' : 'prediction-down'}`}>
-                        {t.predicted_trend === 'UP' ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-                        <span>{t.predicted_trend} ({t.confidence}%)</span>
-                      </div>
-                    </div>
-                    <div className="divergence-subtitle" style={{ marginBottom: '0.5rem' }}>
-                      {horizon} Prediction
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: '0.5rem' }}>
-                      <span className="live-price">${(livePrices[t.ticker] || t.current_price).toFixed(2)}</span>
-                      <button
-                        className="btn"
-                        onClick={(e) => { e.stopPropagation(); handleAddTrending(t.ticker, e); }}
-                        style={{ padding: '4px 8px', fontSize: '0.875rem' }}
-                      >
-                        <Plus size={16} style={{ marginRight: '4px' }} /> Add
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {expandedTicker && (
-        <div className="modal-overlay" onClick={() => setExpandedTicker(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setExpandedTicker(null)}>
-              <X size={24} />
-            </button>
-            <div style={{ marginBottom: '2rem' }}>
-              <h2 style={{ fontSize: '1.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-main)' }}>
-                {expandedTicker.ticker} Overview
-              </h2>
-              <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-                <div className={`prediction-badge ${expandedTicker.predicted_trend === 'UP' ? 'prediction-up' : 'prediction-down'}`} style={{ fontSize: '1rem', padding: '6px 12px' }}>
-                  {expandedTicker.predicted_trend === 'UP' ? <TrendingUp size={18} /> : <TrendingDown size={18} />}
-                  <span>{expandedTicker.predicted_trend} ({expandedTicker.confidence}%)</span>
-                </div>
-                <div style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', padding: '6px 12px', background: 'var(--bg-color)', borderRadius: '20px', border: '1px solid var(--border-color)' }}>
-                  Active Horizon: {horizon}
-                </div>
-                {winRates[expandedTicker.ticker] && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '6px 12px', background: 'rgba(59, 130, 246, 0.1)', borderRadius: '20px', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
-                    <Activity size={14} color="var(--accent)" />
-                    <span style={{ fontSize: '0.875rem', fontWeight: '600', color: 'var(--accent)' }}>
-                      Trust: {winRates[expandedTicker.ticker].rate}%
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="modal-tabs">
-              <button
-                className={`modal-tab ${activeTab === 'overview' ? 'active' : ''}`}
-                onClick={() => setActiveTab('overview')}
-              >
-                Overview & Position
-              </button>
-              <button
-                className={`modal-tab ${activeTab === 'intelligence' ? 'active' : ''}`}
-                onClick={() => setActiveTab('intelligence')}
-              >
-                Signals & Earnings
-              </button>
-            </div>
-
-            {activeTab === 'overview' && (
-              <>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem' }}>
-                  {/* Portfolio Position Tracking */}
-                  <div style={{ padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
-                      <div style={{ flex: 1, minWidth: '200px' }}>
-                        <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>My Position</h3>
-                        {expandedTicker.entry_price ? (
-                          <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: '1rem' }}>
-                            <div>
-                              <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Avg Cost</p>
-                              <p style={{ fontSize: '1.125rem', fontWeight: 'bold' }}>${expandedTicker.entry_price.toFixed(2)}</p>
-                            </div>
-                            {expandedTicker.entry_date && (
-                              <div>
-                                <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Date</p>
-                                <p style={{ fontSize: '0.875rem' }}>{new Date(expandedTicker.entry_date).toLocaleDateString()}</p>
-                              </div>
-                            )}
-                            {livePrices[expandedTicker.ticker] && (
-                              <div>
-                                <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>P&L</p>
-                                <p style={{ fontSize: '1.125rem', fontWeight: 'bold', color: livePrices[expandedTicker.ticker] >= expandedTicker.entry_price ? 'var(--up-color)' : 'var(--down-color)' }}>
-                                  {(livePrices[expandedTicker.ticker] - expandedTicker.entry_price) >= 0 ? '+' : ''}
-                                  ${(livePrices[expandedTicker.ticker] - expandedTicker.entry_price).toFixed(2)}
-                                  <span style={{ fontSize: '0.875rem', marginLeft: '0.25rem' }}>
-                                    ({(((livePrices[expandedTicker.ticker] - expandedTicker.entry_price) / expandedTicker.entry_price) * 100).toFixed(2)}%)
-                                  </span>
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1rem' }}>Not tracking a position. Enter your buy details.</p>
-                        )}
-                      </div>
-
-                      <form
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          savePosition(expandedTicker.ticker, e.target.elements.price.value, e.target.elements.date.value);
-                        }}
-                        style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', background: 'var(--card-bg)', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--border-color)', width: '100%' }}
-                      >
-                        <div style={{ display: 'flex', flexDirection: 'column' }}>
-                          <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Buy Price ($)</label>
-                          <input name="price" type="number" step="0.01" defaultValue={expandedTicker.entry_price || ''} className="search-input" style={{ width: '100px', padding: '0.375rem 0.5rem', background: 'var(--bg-color)' }} placeholder="0.00" />
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column' }}>
-                          <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Date</label>
-                          <input name="date" type="date" defaultValue={expandedTicker.entry_date || ''} className="search-input" style={{ width: '140px', padding: '0.375rem 0.5rem', background: 'var(--bg-color)' }} />
-                        </div>
-                        <button type="submit" className="btn" style={{ padding: '0.375rem 0.75rem', height: 'max-content' }}>Save</button>
-                        {expandedTicker.entry_price && (
-                          <button type="button" onClick={() => savePosition(expandedTicker.ticker, null, null)} className="btn" style={{ padding: '0.375rem 0.75rem', height: 'max-content', background: 'transparent', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>Clear</button>
-                        )}
-                      </form>
-                    </div>
-                  </div>
-
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
-                  <div style={{ height: '300px' }}>
-                    <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>30-Day Price History</h3>
-                    {expandedTicker.history && expandedTicker.history.length > 0 ? (
-                      <ResponsiveContainer width="100%" height="90%">
-                        <LineChart data={[...expandedTicker.history, { date: new Date().toISOString(), price: livePrices[expandedTicker.ticker] || expandedTicker.current_price }]} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
-                          <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={12} tickFormatter={(str) => { const date = new Date(str); return `${date.getMonth() + 1}/${date.getDate()}`; }} />
-                          <YAxis domain={['auto', 'auto']} stroke="var(--text-muted)" fontSize={12} tickFormatter={(val) => `$${val}`} width={60} />
-                          <Tooltip
-                            contentStyle={{ background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '8px' }}
-                            itemStyle={{ color: 'var(--text-main)' }}
-                            labelFormatter={(label) => new Date(label).toLocaleDateString()}
-                          />
-                          <Line type="monotone" dataKey="price" stroke="var(--accent)" strokeWidth={2} dot={false} isAnimationActive={false} />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', border: '1px dashed var(--border-color)', borderRadius: '8px' }}>
-                        No historical data available
-                      </div>
-                    )}
-                  </div>
-
-                  <div style={{ flex: '1 1 300px', height: '100%' }}>
-                    <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>Intraday (5-min)</h3>
-                    {isLoadingIntraday ? (
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '90%', color: 'var(--text-muted)' }}>Loading intraday data...</div>
-                    ) : intradayData.length > 0 ? (
-                      <ResponsiveContainer width="100%" height="90%">
-                        <LineChart data={intradayData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
-                          <XAxis dataKey="time" stroke="var(--text-muted)" fontSize={12} />
-                          <YAxis domain={['auto', 'auto']} stroke="var(--text-muted)" fontSize={12} tickFormatter={(val) => `$${val}`} width={60} />
-                          <Tooltip contentStyle={{ backgroundColor: 'var(--bg-color)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-main)' }} />
-                          <Line type="stepAfter" dataKey="price" stroke="var(--accent)" strokeWidth={2} dot={false} isAnimationActive={false} />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '90%', color: 'var(--text-muted)' }}>No intraday data available</div>
-                    )}
-                  </div>
-                </div>
-              </>
-            )}
-
-            {activeTab === 'intelligence' && (
-              <div className="modal-grid">
-                {expandedTicker.signals && (
-                  <div style={{ padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                    <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '1rem' }}>Signal Confluence Breakdown</h3>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      {Object.keys(expandedTicker.signals).map(key => {
-                        const sig = expandedTicker.signals[key];
-                        const info = laymanExplanations[key] || { name: key, desc: "" };
-                        return (
-                          <div key={key} style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
-                            <div className={`prediction-badge ${sig.direction === 'UP' ? 'prediction-up' : sig.direction === 'DOWN' ? 'prediction-down' : ''}`} style={{ padding: '4px 8px', minWidth: '70px', justifyContent: 'center' }}>
-                              {sig.direction === 'UP' ? <TrendingUp size={14} /> : sig.direction === 'DOWN' ? <TrendingDown size={14} /> : '-'} {sig.direction}
-                            </div>
-                            <div>
-                              <p style={{ fontSize: '0.875rem', fontWeight: 'bold', color: 'var(--text-main)', marginBottom: '0.25rem' }}>{info.name} <span style={{ color: 'var(--text-muted)', fontWeight: 'normal', fontSize: '0.75rem', marginLeft: '0.5rem' }}>Value: {sig.value}</span></p>
-                              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{info.desc}</p>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                <div style={{ padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                  <h3 style={{ fontSize: '1rem', color: 'var(--text-main)', marginBottom: '0.5rem' }}>Earnings Intelligence</h3>
-                  {isLoadingEarnings ? (
-                    <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading earnings data...</p>
-                  ) : earningsData && !earningsData.error ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      {earningsData.next_earnings_date ? (
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Next Earnings:</span>
-                          <span style={{ color: earningsData.is_warning ? 'var(--down-color)' : 'var(--text-main)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                            {earningsData.is_warning && <AlertTriangle size={14} />}
-                            {earningsData.next_earnings_date} ({earningsData.days_until} days)
-                          </span>
-                        </div>
-                      ) : (
-                        <div style={{ padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Next earnings date not available</span>
-                        </div>
-                      )}
-                      {earningsData.analyst && earningsData.analyst.consensus !== 'UNKNOWN' && (
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Analyst Consensus:</span>
-                          <span style={{ color: earningsData.analyst.consensus === 'BUY' ? 'var(--up-color)' : earningsData.analyst.consensus === 'SELL' ? 'var(--down-color)' : 'var(--text-main)', fontWeight: 'bold' }}>
-                            {earningsData.analyst.consensus}
-                          </span>
-                        </div>
-                      )}
-                      {earningsData.historical_beats && earningsData.historical_beats.beat_rate != null && (
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'var(--card-bg)', borderRadius: '6px' }}>
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Earnings Beat Rate:</span>
-                          <span style={{ color: 'var(--text-main)', fontWeight: 'bold' }}>
-                            {Math.round(earningsData.historical_beats.beat_rate * 100)}% (Last {earningsData.historical_beats.quarters_checked} Qs)
-                          </span>
-                        </div>
-                      )}
-                      {!earningsData.next_earnings_date && (!earningsData.analyst || earningsData.analyst.consensus === 'UNKNOWN') && (!earningsData.historical_beats || earningsData.historical_beats.beat_rate == null) && (
-                        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>No earnings data available for this ticker.</p>
-                      )}
-                    </div>
-                  ) : (
-                    <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Earnings data unavailable. The backend may still be deploying.</p>
-                  )}
-                </div>
-              </div>
-            )}
-
-          </div>
-        </div>
-      )}
+      <DetailsModal
+        expandedTicker={expandedTicker}
+        setExpandedTicker={setExpandedTicker}
+        horizon={horizon}
+        winRates={winRates}
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        livePrices={livePrices}
+        savePosition={savePosition}
+        isLoadingIntraday={isLoadingIntraday}
+        intradayData={intradayData}
+        isLoadingEarnings={isLoadingEarnings}
+        earningsData={earningsData}
+        laymanExplanations={laymanExplanations}
+      />
     </div>
   );
 }

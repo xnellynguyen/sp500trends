@@ -37,15 +37,21 @@ def prepare_data(ticker_symbol, start_date, end_date, horizon, use_macro):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    df['SMA_20'] = ta.trend.sma_indicator(df['Close'], window=20)
-    df['SMA_50'] = ta.trend.sma_indicator(df['Close'], window=50)
-    df['EMA_12'] = ta.trend.ema_indicator(df['Close'], window=12)
+    df['Daily_Return'] = df['Close'].pct_change()
+    df['High_Low_Range'] = (df['High'] - df['Low']) / df['Close']
+    df['Close_vs_High'] = (df['Close'] - df['High']) / df['High']
+    df['Volume_Change'] = df['Volume'].pct_change()
+    df['Volume_vs_20d'] = df['Volume'] / df['Volume'].rolling(20).mean()
+
+    df['SMA_20'] = ta.trend.sma_indicator(df['Close'], window=20) / df['Close'] - 1
+    df['SMA_50'] = ta.trend.sma_indicator(df['Close'], window=50) / df['Close'] - 1
+    df['EMA_12'] = ta.trend.ema_indicator(df['Close'], window=12) / df['Close'] - 1
     df['RSI_14'] = ta.momentum.rsi(df['Close'], window=14)
-    df['MACD'] = ta.trend.macd(df['Close'])
-    df['MACD_Signal'] = ta.trend.macd_signal(df['Close'])
-    df['MACD_Diff'] = ta.trend.macd_diff(df['Close'])
-    df['Bollinger_High'] = ta.volatility.bollinger_hband(df['Close'])
-    df['Bollinger_Low'] = ta.volatility.bollinger_lband(df['Close'])
+    df['MACD'] = ta.trend.macd(df['Close']) / df['Close']
+    df['MACD_Signal'] = ta.trend.macd_signal(df['Close']) / df['Close']
+    df['MACD_Diff'] = ta.trend.macd_diff(df['Close']) / df['Close']
+    df['Bollinger_High'] = ta.volatility.bollinger_hband(df['Close']) / df['Close'] - 1
+    df['Bollinger_Low'] = ta.volatility.bollinger_lband(df['Close']) / df['Close'] - 1
     
     if use_macro:
         spy = yf.download("SPY", start=start_date, end=end_date, progress=False)
@@ -84,7 +90,7 @@ def run_backtest(ticker="SPY", horizon="1d", use_macro=False):
     if df.empty: return None
         
     features = [
-        'Open', 'High', 'Low', 'Close', 'Volume',
+        'Daily_Return', 'High_Low_Range', 'Close_vs_High', 'Volume_Change', 'Volume_vs_20d',
         'SMA_20', 'SMA_50', 'EMA_12', 'RSI_14',
         'MACD', 'MACD_Signal', 'MACD_Diff',
         'Bollinger_High', 'Bollinger_Low'

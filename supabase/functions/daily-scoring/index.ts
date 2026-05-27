@@ -17,50 +17,117 @@ serve(async (req) => {
   const { data: predictions, error } = await supabase
     .from("predictions")
     .select("*")
-    .is("resolved_at", null);
+    .is("resolved_correctly", null);
 
   if (error) {
     return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   }
 
-  const now = new Date();
-  const results = [];
-
-  for (const p of predictions) {
-    const createdAt = new Date(p.created_at);
-    // Difference in calendar days
-    const diffDays = (now.getTime() - createdAt.getTime()) / (1000 * 3600 * 24);
-    
-    // Simple logic: if 1d horizon and it's been >= 1 day, or 5d and >= 5 days
-    const isDue = (p.horizon === '1d' && diffDays >= 1) || (p.horizon === '5d' && diffDays >= 5);
-    
-    if (isDue && p.base_price !== null) {
-      try {
-        // Finnhub quote endpoint returns current price
-        const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${p.ticker}&token=${finnhubKey}`);
-        const data = await res.json();
-        const currentPrice = data.c;
-        
-        if (currentPrice) {
-          const wentUp = currentPrice > p.base_price;
-          const predictedUp = p.predicted_direction === "UP";
-          const resolvedCorrectly = wentUp === predictedUp;
-
-          // Resolve it in DB
-          await supabase
-            .from("predictions")
-            .update({
-              resolved_at: new Date().toISOString(),
-              resolved_correctly: resolvedCorrectly
-            })
-            .eq("id", p.id);
-            
-          results.push({ id: p.id, ticker: p.ticker, resolvedCorrectly });
-        }
-      } catch (e) {
-        console.error(`Failed to score ${p.ticker}`, e);
+  // Helper to add trading days
+  const addTradingDays = (dateStr: string, days: number) => {
+    let date = new Date(dateStr);
+    let added = 0;
+    while (added < days) {
+      date.setDate(date.getDate() + 1);
+      const day = date.getDay();
+      if (day !== 0 && day !== 6) { // Skip weekends
+        added++;
       }
     }
+    return date;
+  };
+
+  const now = new Date();
+  const matured = [];
+
+  for (const p of predictions) {
+    if (p.base_price === null) continue;
+    
+    const horizonDays = p.horizon === '5d' ? 5 : 1;
+    const targetDate = addTradingDays(p.created_at, horizonDays);
+    
+    // Set target to end of trading day (approx 4 PM ET = 20:00 UTC)
+    targetDate.setUTCHours(20, 0, 0, 0);
+
+    if (now >= targetDate) {
+      matured.push({ 
+        ...p, 
+        _targetDate: targetDate.toISOString().split('T')[0] 
+      });
+    }
+  }
+
+  const results = [];
+  if (matured.length > 0) {
+    try {
+      // Build unique checks for backend
+      const uniqueChecks: Record<string, any> = {};
+      for (const p of matured) {
+        const key = `${p.ticker}_${p._targetDate}`;
+        if (!uniqueChecks[key]) {
+          uniqueChecks[key] = { ticker: p.ticker, date: p._targetDate };
+        }
+      }
+
+      const backendUrl = Deno.env.get("API_BASE_URL") || "https://sp500-predictor-697399258111.us-central1.run.app";
+      const serviceToken = Deno.env.get("SERVICE_TOKEN") || "dev_service_token_123";
+
+      const res = await fetch(`${backendUrl}/api/historical_prices`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${serviceToken}`
+        },
+        body: JSON.stringify({ checks: Object.values(uniqueChecks) })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const prices = data.prices;
+
+        for (const p of matured) {
+          const key = `${p.ticker}_${p._targetDate}`;
+          const actualPrice = prices[key];
+
+          if (actualPrice !== undefined && actualPrice !== null) {
+            const wentUp = actualPrice > p.base_price;
+            const predictedUp = p.predicted_direction === "UP";
+            const resolvedCorrectly = wentUp === predictedUp;
+
+            await supabase
+              .from("predictions")
+              .update({
+                resolved_correctly: resolvedCorrectly
+              })
+              .eq("id", p.id);
+              
+            results.push({ id: p.id, ticker: p.ticker, resolvedCorrectly });
+          }
+        }
+      } else {
+        console.error("Backend historical prices returned status:", res.status);
+      }
+    } catch (e) {
+      console.error("Failed to fetch historical prices from backend", e);
+    }
+  }
+
+  // 1b. Cleanup predictions older than 90 days (TTL)
+  try {
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    const { error: deleteError } = await supabase
+      .from("predictions")
+      .delete()
+      .lt("created_at", ninetyDaysAgo.toISOString());
+      
+    if (deleteError) {
+      console.error("Failed to prune old predictions:", deleteError);
+    } else {
+      console.log("Successfully pruned predictions older than 90 days");
+    }
+  } catch (e) {
+    console.error("Cleanup error:", e);
   }
 
   // 2. Check for upcoming earnings
