@@ -56,7 +56,15 @@ jobs:
       - name: Inject Environment Variables for Vite
         run: |
           cp .vercel/.env.production.local .env
-          echo "VITE_FINNHUB_KEY=${{ secrets.VITE_FINNHUB_KEY }}" >> .env
+          # Remove empty/sensitive environment variables so Vite falls back to actual Vercel values
+          sed -i '/=""/d' .env
+          # Append Finnhub key if present in GitHub Secrets as fallback
+          if [ ! -z "${{ secrets.VITE_FINNHUB_KEY }}" ]; then
+            echo "VITE_FINNHUB_KEY=${{ secrets.VITE_FINNHUB_KEY }}" >> .env
+          fi
+          # Inject Supabase environment variables from GitHub Secrets
+          echo "VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}" >> .env
+          echo "VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}" >> .env
         working-directory: frontend
 
       - name: Build Project Artifacts

@@ -1,6 +1,6 @@
 # S&P 500 AI Trend Predictor — Development Log & Architecture
 
-> **Last Updated:** May 26, 2026 | **Version:** 2.0
+> **Last Updated:** May 28, 2026 | **Version:** 2.1
 
 ---
 

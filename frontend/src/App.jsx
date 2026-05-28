@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { TrendingUp, TrendingDown, Activity, Search, X, Calendar, HelpCircle, Settings, LogOut, AlertTriangle, Trash2, Filter, Plus, Zap } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Search, X, Calendar, HelpCircle, Settings, LogOut, Trash2, Filter, Plus, Zap } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, YAxis, XAxis, Tooltip, CartesianGrid } from 'recharts';
 import { supabase } from './supabaseClient';
 import './index.css';
@@ -19,6 +19,8 @@ const getAuthHeaders = (session) => {
 };
 
 function App() {
+
+
   const [session, setSession] = useState(null);
   const [tickers, setTickers] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
