@@ -36,6 +36,7 @@ REDIS_URL = os.environ.get("REDIS_URL", "").strip('"').strip("'")
 
 # CORS Allowed Origins
 ALLOWED_ORIGINS = [
+    "https://sp500predictor.vercel.app",
     "https://sp500trends.vercel.app",
     "https://sp500-trends.vercel.app",
     "http://localhost:5173",
