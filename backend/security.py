@@ -1,6 +1,6 @@
+import requests
 from fastapi import Header, HTTPException
-import jwt
-from config import SUPABASE_JWT_SECRET, SERVICE_TOKEN
+from config import SUPABASE_URL, SUPABASE_ANON_KEY, SERVICE_TOKEN
 
 def verify_token(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -10,8 +10,28 @@ def verify_token(authorization: str = Header(None)):
     if token == SERVICE_TOKEN:
         return {"role": "service"}
         
+    # Verify token against Supabase Auth API
+    url = f"{SUPABASE_URL.rstrip('/')}/auth/v1/user"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "apikey": SUPABASE_ANON_KEY
+    }
     try:
-        payload = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated")
-        return payload
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            return res.json()
+        
+        detail = "Authentication failed: invalid token"
+        try:
+            err_data = res.json()
+            if "error_description" in err_data:
+                detail = f"Authentication failed: {err_data['error_description']}"
+            elif "msg" in err_data:
+                detail = f"Authentication failed: {err_data['msg']}"
+        except Exception:
+            pass
+        raise HTTPException(status_code=401, detail=detail)
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")

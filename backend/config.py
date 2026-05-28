@@ -4,14 +4,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Strict security check for SUPABASE_JWT_SECRET
+# Optional: SUPABASE_JWT_SECRET can be used for fallback local validation
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET")
-if not SUPABASE_JWT_SECRET:
-    raise RuntimeError(
-        "CRITICAL ERROR: SUPABASE_JWT_SECRET is missing from the environment variables. "
-        "The application cannot start without this key for token authorization. "
-        "Please retrieve the JWT Secret from your Supabase Project Settings API tab."
-    )
 
 # Supabase Auth Settings
 SUPABASE_URL = (
